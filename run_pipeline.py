@@ -4,12 +4,11 @@ run_pipeline.py
 Top-level script to run the ingestion -> training -> evaluation pipeline,
 extended to:
   - Train baseline U-Net
-  - Compress baseline with SVD (one or multiple ranks)
-  - Compress baseline with ARSVD (one or multiple taus)
-  - Evaluate baseline and each compressed variant on the test set
+  - Compress baseline with SVD (one or multiple ranks) using randomized SVD
+  - Compress baseline with ARSVD (one or multiple taus) using randomized reconstruction
+  - Factorize compressed models (actual reduced weights) and evaluate them
   - Save a JSON summary with parameter counts, size (MB), compression % and metrics
 """
-
 import argparse
 import json
 import logging
@@ -17,6 +16,7 @@ import os
 from typing import Tuple, List
 
 import torch
+import torch.nn as nn
 
 from pipelines.train_pipeline import train_pipeline
 
@@ -27,7 +27,13 @@ from steps.evaluation import evaluate_model_ckpt  # kept for compatibility if ne
 
 # Models + compression + evaluator
 from models.unet import UNet
-from models.compression import compress_model_svd, compress_model_arsvd
+from models.compression import (
+    compress_model_svd,
+    compress_model_arsvd,
+    model_compressed_storage,
+    compress_model_factorized_copy,
+    model_size_bytes,
+)
 from models.evaluation import SegmentationEvaluator
 
 logging.basicConfig(level=logging.INFO)
@@ -55,12 +61,12 @@ def make_adapters(data_root: str,
                   out_dir: str,
                   multi_class: bool = False,
                   svd_ranks: List[int] = None,
-                  arsvd_taus: List[float] = None):
+                  arsvd_taus: List[float] = None,
+                  finetune_compressed: bool = False,
+                  finetune_epochs: int = 3,
+                  finetune_lr: float = 1e-5):
     """
     Build pipeline-adapter callables that match the expected chaining behavior.
-
-    svd_ranks: list of ints, e.g. [16,32] (if empty, default [32] will be used)
-    arsvd_taus: list of floats, e.g. [0.85,0.9] (if empty, default [0.9] will be used)
     """
 
     if svd_ranks is None or len(svd_ranks) == 0:
@@ -102,9 +108,10 @@ def make_adapters(data_root: str,
         """
         Evaluation and compression step:
         - load baseline checkpoint (from prev)
-        - compress baseline with SVD for each rank in svd_ranks
-        - compress baseline with ARSVD for each tau in arsvd_taus
-        - evaluate baseline + all variants on the test set
+        - compress baseline with SVD for each rank in svd_ranks (randomized)
+        - compress baseline with ARSVD for each tau in arsvd_taus (randomized recon)
+        - factorize the compressed models (actual reduced params)
+        - evaluate baseline + factorized variants on the test set
         - save summary json to out_dir/experiment_summary.json
         """
         ckpt = None
@@ -125,69 +132,25 @@ def make_adapters(data_root: str,
 
         baseline = UNet(n_channels=3, n_classes=1)
         baseline.load_state_dict(torch.load(ckpt, map_location="cpu"))
+        baseline.eval()
 
-        # Create evaluator
         evaluator = SegmentationEvaluator(threshold=0.5)
 
         device_to_use = device if (torch.cuda.is_available() and device.startswith("cuda")) else "cpu"
         logger.info(f"Evaluating on device: {device_to_use}")
 
         # helper to get params and serialized size in MB
-        def model_info(m):
+        def model_info(m: nn.Module):
             params = sum(p.numel() for p in m.parameters() if p.requires_grad)
-            size_mb = sum(p.numel() * p.element_size() for p in m.parameters()) / (1024 ** 2)
-            return {"params": params, "size_MB": round(size_mb, 4)}
+            size_mb = model_size_bytes(m) / (1024 ** 2)
+            return {"params": int(params), "size_MB": round(float(size_mb), 6)}
 
         # Evaluate baseline
         logger.info("Evaluating baseline model...")
+        baseline.to(device_to_use)
         baseline_metrics = evaluator.calculate_score(baseline, test_loader, device=device_to_use)
         base_info = model_info(baseline)
-
-        # Collect SVD variants
-        svd_results = []
-        for rank in svd_ranks:
-            logger.info(f"Creating SVD compression with rank={rank} ...")
-            svd_model = compress_model_svd(baseline, rank=rank, use_randomized=False)
-            svd_ckpt = os.path.join(out_dir, f"svd_rank_{rank}.pth")
-            torch.save(svd_model.state_dict(), svd_ckpt)
-
-            # evaluate
-            logger.info(f"Evaluating SVD rank={rank} ...")
-            svd_metrics = evaluator.calculate_score(svd_model, test_loader, device=device_to_use)
-            svd_info = model_info(svd_model)
-            svd_results.append({
-                "rank": rank,
-                "ckpt": svd_ckpt,
-                "info": svd_info,
-                "metrics": svd_metrics,
-                "compression_vs_baseline_%": {
-                    "params": round(100 * (1 - svd_info["params"] / base_info["params"]), 4),
-                    "size_MB": round(100 * (1 - svd_info["size_MB"] / base_info["size_MB"]), 4),
-                }
-            })
-
-        # Collect ARSVD variants
-        arsvd_results = []
-        for tau in arsvd_taus:
-            logger.info(f"Creating ARSVD compression with tau={tau} ...")
-            arsvd_model = compress_model_arsvd(baseline, tau=tau, recon_method="randomized")
-            arsvd_ckpt = os.path.join(out_dir, f"arsvd_tau_{tau:.3f}.pth")
-            torch.save(arsvd_model.state_dict(), arsvd_ckpt)
-
-            logger.info(f"Evaluating ARSVD tau={tau} ...")
-            arsvd_metrics = evaluator.calculate_score(arsvd_model, test_loader, device=device_to_use)
-            arsvd_info = model_info(arsvd_model)
-            arsvd_results.append({
-                "tau": tau,
-                "ckpt": arsvd_ckpt,
-                "info": arsvd_info,
-                "metrics": arsvd_metrics,
-                "compression_vs_baseline_%": {
-                    "params": round(100 * (1 - arsvd_info["params"] / base_info["params"]), 4),
-                    "size_MB": round(100 * (1 - arsvd_info["size_MB"] / base_info["size_MB"]), 4),
-                }
-            })
-
+        baseline.to("cpu")
 
         summary = {
             "baseline": {
@@ -195,17 +158,104 @@ def make_adapters(data_root: str,
                 "info": base_info,
                 "metrics": baseline_metrics,
             },
-            "svd_variants": svd_results,
-            "arsvd_variants": arsvd_results
+            "svd_variants": [],
+            "arsvd_variants": []
         }
 
+        # SVD fixed-rank variants (use randomized SVD)
+        for rank in svd_ranks:
+            logger.info(f"Compressing (SVD randomized) with rank={rank} ...")
+            # compress_model_svd returns (model, rank_map, weights_map) when asked
+            svd_compressed, svd_rank_map, svd_weights_map = compress_model_svd(
+                baseline,
+                rank=rank,
+                use_randomized=True,
+                random_state=42,
+                svd_kwargs={"n_oversamples": 10, "n_iter": 2},
+                return_rank_map=True,
+                return_weights=True,
+            )
 
+            # theoretical storage for factors
+            theo_mb = model_compressed_storage(baseline, svd_rank_map)
+
+            # create real factorized model (actual param reduction)
+            svd_fact_model = compress_model_factorized_copy(baseline, rank_map=svd_rank_map, default_rank=rank,
+                                                            use_randomized=True, random_state=42,
+                                                            n_oversamples=10, n_iter=2)
+            svd_fact_model.eval()
+
+            # evaluate factorized model
+            svd_fact_model.to(device_to_use)
+            svd_metrics = evaluator.calculate_score(svd_fact_model, test_loader, device=device_to_use)
+            svd_info = model_info(svd_fact_model)
+
+            # save checkpoint
+            svd_ckpt = os.path.join(out_dir, f"svd_factorized_rank_{rank}.pth")
+            torch.save(svd_fact_model.state_dict(), svd_ckpt)
+            svd_fact_model.to("cpu")
+
+            summary["svd_variants"].append({
+                "rank": rank,
+                "ckpt": svd_ckpt,
+                "info": svd_info,
+                "theoretical_factors_MB": round(float(theo_mb), 6),
+                "metrics": svd_metrics,
+                "compression_vs_baseline_%": {
+                    "params": round(100 * (1 - svd_info["params"] / base_info["params"]), 4),
+                    "size_MB": round(100 * (1 - svd_info["size_MB"] / base_info["size_MB"]), 4),
+                },
+                "per_layer_ranks": svd_rank_map
+            })
+
+        # ARSVD adaptive-rank variants (randomized recon)
+        for tau in arsvd_taus:
+            logger.info(f"Compressing (ARSVD randomized) with tau={tau} ...")
+            arsvd_compressed, arsvd_rank_map, arsvd_weights_map = compress_model_arsvd(
+                baseline,
+                tau=tau,
+                recon_method="randomized",
+                n_oversamples=10,
+                n_iter=2,
+                random_state=42,
+                return_rank_map=True,
+                return_weights=True,
+            )
+
+            theo_mb = model_compressed_storage(baseline, arsvd_rank_map)
+
+            arsvd_fact_model = compress_model_factorized_copy(baseline, rank_map=arsvd_rank_map,
+                                                              use_randomized=True, random_state=42,
+                                                              n_oversamples=10, n_iter=2)
+            arsvd_fact_model.eval()
+
+            arsvd_fact_model.to(device_to_use)
+            arsvd_metrics = evaluator.calculate_score(arsvd_fact_model, test_loader, device=device_to_use)
+            arsvd_info = model_info(arsvd_fact_model)
+
+            arsvd_ckpt = os.path.join(out_dir, f"arsvd_factorized_tau_{tau:.3f}.pth")
+            torch.save(arsvd_fact_model.state_dict(), arsvd_ckpt)
+            arsvd_fact_model.to("cpu")
+
+            summary["arsvd_variants"].append({
+                "tau": tau,
+                "ckpt": arsvd_ckpt,
+                "info": arsvd_info,
+                "theoretical_factors_MB": round(float(theo_mb), 6),
+                "metrics": arsvd_metrics,
+                "compression_vs_baseline_%": {
+                    "params": round(100 * (1 - arsvd_info["params"] / base_info["params"]), 4),
+                    "size_MB": round(100 * (1 - arsvd_info["size_MB"] / base_info["size_MB"]), 4),
+                },
+                "per_layer_ranks": arsvd_rank_map
+            })
+
+        # save summary
         summary_path = os.path.join(out_dir, "experiment_summary.json")
         with open(summary_path, "w") as f:
             json.dump(summary, f, indent=2)
 
         logger.info(f"Experiment summary saved to {summary_path}")
-     
         return summary
 
     return ingest_step, train_step, eval_step
@@ -225,6 +275,11 @@ def main():
                    help="Comma-separated ranks to try for SVD compression, e.g. '16,32,64'")
     p.add_argument("--arsvd_taus", type=str, default="0.9",
                    help="Comma-separated taus to try for ARSVD, e.g. '0.85,0.9,0.95'")
+    p.add_argument("--finetune_compressed", action="store_true",
+                   help="If set, will call train_fn to fine-tune each compressed model (train_fn must accept the same signature).")
+    p.add_argument("--finetune_epochs", type=int, default=3)
+    p.add_argument("--finetune_lr", type=float, default=1e-5)
+
     args = p.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -243,6 +298,9 @@ def main():
         multi_class=args.multi_class,
         svd_ranks=svd_ranks,
         arsvd_taus=arsvd_taus,
+        finetune_compressed=args.finetune_compressed,
+        finetune_epochs=args.finetune_epochs,
+        finetune_lr=args.finetune_lr,
     )
 
     pipeline = train_pipeline(
@@ -254,7 +312,7 @@ def main():
 
     outputs = pipeline.run()
 
-    # Save a small summary mapping for UI convenience 
+    # Save a small summary mapping for UI convenience
     summary_for_ui = {}
     for idx, info in outputs.items():
         out_repr = info["output"]

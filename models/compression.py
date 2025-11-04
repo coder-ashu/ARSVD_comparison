@@ -1,7 +1,7 @@
 # models/compression.py
 import copy
 import os
-from typing import Callable, Optional, Dict, Any
+from typing import Callable, Optional, Dict, Any, Tuple
 
 import numpy as np
 import torch
@@ -14,11 +14,6 @@ except Exception:
 
 
 def svd_truncate_matrix(mat: np.ndarray, k: int) -> np.ndarray:
-    """
-    Full SVD truncation: compute U, S, Vt and return the rank-k approximation.
-    mat: 2D numpy array shape (m, n)
-    k: desired rank
-    """
     U, S, Vt = np.linalg.svd(mat, full_matrices=False)
     U_k = U[:, :k]
     S_k = S[:k]
@@ -31,10 +26,6 @@ def randomized_svd_truncate_matrix(mat: np.ndarray,
                                    n_oversamples: int = 10,
                                    n_iter: int = 2,
                                    random_state: Optional[int] = None) -> np.ndarray:
-    """
-    Randomized SVD truncation (approximate) using sklearn.randomized_svd if available.
-    Falls back to full SVD if sklearn is not present.
-    """
     if randomized_svd is None:
         return svd_truncate_matrix(mat, k)
     U, S, Vt = randomized_svd(mat, n_components=k, n_oversamples=n_oversamples,
@@ -42,20 +33,12 @@ def randomized_svd_truncate_matrix(mat: np.ndarray,
     return (U * S) @ Vt
 
 
-
 def adaptive_rank_from_entropy(singular_values: np.ndarray, tau: float) -> int:
-    """
-    Choose smallest k s.t. cumulative entropy >= tau * total_entropy.
-
-    singular_values: 1D array of singular values (non-negative, typically descending)
-    tau: threshold in (0,1), e.g., 0.90
-    """
     s = np.array(singular_values, dtype=np.float64)
     total = s.sum()
     if total == 0:
         return 1
     p = s / total
-    # avoid log(0)
     p_safe = np.where(p <= 0, 1e-12, p)
     ent = -p_safe * np.log(p_safe)
     cumsum_ent = np.cumsum(ent)
@@ -67,29 +50,18 @@ def adaptive_rank_from_entropy(singular_values: np.ndarray, tau: float) -> int:
     return max(1, min(k, len(s)))
 
 
-
 def truncate_conv2d_weight(weight: torch.Tensor,
                            method: str,
                            k: int,
                            n_oversamples: int = 10,
                            n_iter: int = 2,
                            random_state: Optional[int] = None) -> torch.Tensor:
-    """
-    Truncate a Conv2d weight tensor using SVD/randomized SVD.
-
-    weight: torch.Tensor with shape (out_channels, in_channels, kh, kw)
-    method: 'svd' or 'randomized'
-    k: rank to keep
-    Returns a torch.Tensor with same shape and dtype as input.
-    """
     if weight.ndim != 4:
         raise ValueError("Expected a Conv2d weight tensor of shape (out_c, in_c, kh, kw)")
 
     out_c, in_c, kh, kw = weight.shape
-    # reshape into 2D matrix: (out_c, in_c * kh * kw)
     mat = weight.detach().cpu().numpy().reshape(out_c, in_c * kh * kw)
 
-    # clamp k
     max_rank = min(mat.shape[0], mat.shape[1])
     k_use = max(1, min(int(k), max_rank))
 
@@ -105,13 +77,31 @@ def truncate_conv2d_weight(weight: torch.Tensor,
     return approx_tensor
 
 
-
 def default_layer_selector(module: nn.Module) -> bool:
-    """
-    Default: select all Conv2d layers.
-    Customize this if you want to compress only encoder or certain named layers.
-    """
     return isinstance(module, nn.Conv2d)
+
+
+# theoretical reduction
+def compressed_storage_for_svd(out_c: int, in_c: int, kh: int, kw: int, r: int, dtype=np.float32) -> float:
+    """
+    Return MB required to store (U_r, S_r, Vt_r) for a conv weight shaped (out_c, in_c, kh, kw).
+    """
+    bytes_per = np.dtype(dtype).itemsize
+    u_elems = out_c * r
+    s_elems = r
+    vt_elems = r * in_c * kh * kw
+    total_bytes = (u_elems + s_elems + vt_elems) * bytes_per
+    return total_bytes / (1024 ** 2)  # MB
+
+
+def model_compressed_storage(model: nn.Module, rank_map: Dict[str, int], dtype=np.float32) -> float:
+    total_mb = 0.0
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv2d):
+            out_c, in_c, kh, kw = module.weight.shape
+            k = rank_map.get(name, min(out_c, in_c * kh * kw))
+            total_mb += compressed_storage_for_svd(out_c, in_c, kh, kw, k, dtype=dtype)
+    return total_mb
 
 
 
@@ -121,15 +111,15 @@ def compress_model_svd(model: nn.Module,
                        use_randomized: bool = False,
                        random_state: Optional[int] = None,
                        layer_selector: Optional[Callable[[nn.Module], bool]] = None,
-                       svd_kwargs: Optional[Dict[str, Any]] = None) -> nn.Module:
+                       svd_kwargs: Optional[Dict[str, Any]] = None,
+                       return_rank_map: bool = False,
+                       return_weights: bool = False) -> Any:
     """
-    Compress a model by applying SVD truncation to selected Conv2d layers.
+    Compress a model by truncating Conv2d layer weights.
 
-    Provide either `rank` (fixed int) or `energy` (fraction 0..1 of singular energy to keep).
-    - use_randomized: if True, use randomized SVD for reconstruction (faster for large mats if sklearn available)
-    - random_state: seed passed to randomized SVD
-    - layer_selector: function(module) -> bool to choose which layers to compress (default: Conv2d)
-    - svd_kwargs: extra kwargs forwarded to truncate_conv2d_weight (n_oversamples, n_iter, ...)
+    Backwards-compatible: by default returns new_model.
+    If return_rank_map=True returns (new_model, rank_map).
+    If return_rank_map & return_weights True returns (new_model, rank_map, weights_map).
     """
     if layer_selector is None:
         layer_selector = default_layer_selector
@@ -137,63 +127,8 @@ def compress_model_svd(model: nn.Module,
         svd_kwargs = {}
 
     new_model = copy.deepcopy(model)
-
-    for name, module in new_model.named_modules():
-        if not layer_selector(module):
-            continue
-        if not hasattr(module, "weight") or module.weight is None:
-            continue
-
-        w = module.weight.data  # tensor
-        out_c, in_c, kh, kw = w.shape
-        mat = w.detach().cpu().numpy().reshape(out_c, in_c * kh * kw)
-
-        # compute singular values (try full SVD; fallback to randomized for stability/perf)
-        try:
-            s = np.linalg.svd(mat, compute_uv=False)
-        except Exception:
-            if randomized_svd is not None:
-                approx_rank = min(mat.shape[0], mat.shape[1], 128)
-                U, S, Vt = randomized_svd(mat, n_components=approx_rank, n_oversamples=10,
-                                          n_iter=2, random_state=random_state)
-                s = S
-            else:
-                s = np.linalg.svd(mat, compute_uv=False)
-
-        # determine k
-        if energy is not None:
-            energy_cumsum = np.cumsum(s ** 2) / np.sum(s ** 2)
-            k = int(np.searchsorted(energy_cumsum, energy) + 1)
-        elif rank is not None:
-            k = int(rank)
-        else:
-            raise ValueError("Either 'rank' or 'energy' must be provided to compress_model_svd")
-
-        method = "randomized" if use_randomized else "svd"
-        new_w = truncate_conv2d_weight(w, method=method, k=k, random_state=random_state, **svd_kwargs)
-        module.weight.data.copy_(new_w)
-        # biases (if present) are left unchanged
-
-    return new_model
-
-
-def compress_model_arsvd(model: nn.Module,
-                         tau: float = 0.95,
-                         recon_method: str = "randomized",
-                         n_oversamples: int = 10,
-                         n_iter: int = 2,
-                         random_state: Optional[int] = None,
-                         layer_selector: Optional[Callable[[nn.Module], bool]] = None) -> nn.Module:
-    """
-    Adaptive-Rank SVD: for each selected layer compute singular values, choose k by entropy threshold tau,
-    and reconstruct the weight with either full SVD or randomized reconstruction.
-
-    recon_method: 'svd' or 'randomized'
-    """
-    if layer_selector is None:
-        layer_selector = default_layer_selector
-
-    new_model = copy.deepcopy(model)
+    rank_map: Dict[str, int] = {}
+    weights_map: Dict[str, torch.Tensor] = {}
 
     for name, module in new_model.named_modules():
         if not layer_selector(module):
@@ -205,22 +140,197 @@ def compress_model_arsvd(model: nn.Module,
         out_c, in_c, kh, kw = w.shape
         mat = w.detach().cpu().numpy().reshape(out_c, in_c * kh * kw)
 
-        # get singular values (full or approximate)
+        # compute singular values (randomized if requested)
         try:
-            s = np.linalg.svd(mat, compute_uv=False)
-        except Exception:
-            if randomized_svd is not None:
-                approx_rank = min(mat.shape[0], mat.shape[1], 128)
-                U, S, Vt = randomized_svd(mat, n_components=approx_rank, n_oversamples=n_oversamples,
-                                          n_iter=max(1, n_iter), random_state=random_state)
-                s = S
+            if use_randomized and randomized_svd is not None:
+                max_possible = min(mat.shape[0], mat.shape[1])
+                n_components = min(max_possible, rank or max_possible)
+                n_oversamples = svd_kwargs.get("n_oversamples", 10)
+                n_iter = svd_kwargs.get("n_iter", 2)
+                U_tmp, S_tmp, Vt_tmp = randomized_svd(mat, n_components=n_components,
+                                                      n_oversamples=n_oversamples,
+                                                      n_iter=n_iter,
+                                                      random_state=random_state)
+                s = S_tmp
             else:
                 s = np.linalg.svd(mat, compute_uv=False)
+        except Exception:
+            s = np.linalg.svd(mat, compute_uv=False)
+
+        # determine k
+        if energy is not None:
+            energy_cumsum = np.cumsum(s ** 2) / np.sum(s ** 2)
+            k = int(np.searchsorted(energy_cumsum, energy) + 1)
+        elif rank is not None:
+            k = int(rank)
+        else:
+            raise ValueError("Either 'rank' or 'energy' must be provided to compress_model_svd")
+
+        max_rank = min(mat.shape[0], mat.shape[1])
+        k_use = max(1, min(int(k), max_rank))
+
+        method = "randomized" if use_randomized else "svd"
+        new_w = truncate_conv2d_weight(w, method=method, k=k_use,
+                                       n_oversamples=svd_kwargs.get("n_oversamples", 10),
+                                       n_iter=svd_kwargs.get("n_iter", 2),
+                                       random_state=random_state)
+
+        module.weight.data.copy_(new_w)
+
+        rank_map[name] = int(k_use)
+        if return_weights:
+            weights_map[name] = new_w.detach().cpu().clone()
+
+    if return_rank_map and return_weights:
+        return new_model, rank_map, weights_map
+    if return_rank_map:
+        return new_model, rank_map
+    return new_model
+
+
+def compress_model_arsvd(model: nn.Module,
+                         tau: float = 0.95,
+                         recon_method: str = "randomized",
+                         n_oversamples: int = 10,
+                         n_iter: int = 2,
+                         random_state: Optional[int] = None,
+                         layer_selector: Optional[Callable[[nn.Module], bool]] = None,
+                         return_rank_map: bool = False,
+                         return_weights: bool = False) -> Any:
+    """
+    ARSVD: compute per-layer rank via entropy rule and reconstruct using recon_method.
+    Returns new_model by default; optionally (new_model, rank_map) or (new_model, rank_map, weights_map).
+    """
+    if layer_selector is None:
+        layer_selector = default_layer_selector
+
+    new_model = copy.deepcopy(model)
+    rank_map: Dict[str, int] = {}
+    weights_map: Dict[str, torch.Tensor] = {}
+
+    for name, module in new_model.named_modules():
+        if not layer_selector(module):
+            continue
+        if not hasattr(module, "weight") or module.weight is None:
+            continue
+
+        w = module.weight.data
+        out_c, in_c, kh, kw = w.shape
+        mat = w.detach().cpu().numpy().reshape(out_c, in_c * kh * kw)
+
+        # compute singular values (approx with randomized if recon_method is randomized)
+        try:
+            if (recon_method == "randomized") and (randomized_svd is not None):
+                approx_rank = min(mat.shape[0], mat.shape[1], max(128, min(mat.shape)))
+                U_tmp, S_tmp, Vt_tmp = randomized_svd(mat, n_components=approx_rank, n_oversamples=n_oversamples,
+                                                      n_iter=max(1, n_iter), random_state=random_state)
+                s = S_tmp
+            else:
+                s = np.linalg.svd(mat, compute_uv=False)
+        except Exception:
+            s = np.linalg.svd(mat, compute_uv=False)
 
         k = adaptive_rank_from_entropy(s, tau)
-        new_w = truncate_conv2d_weight(w, method=recon_method, k=k,
+        k_use = max(1, min(int(k), min(mat.shape[0], mat.shape[1])))
+
+        new_w = truncate_conv2d_weight(w, method=recon_method, k=k_use,
                                        n_oversamples=n_oversamples, n_iter=n_iter, random_state=random_state)
         module.weight.data.copy_(new_w)
+
+        rank_map[name] = int(k_use)
+        if return_weights:
+            weights_map[name] = new_w.detach().cpu().clone()
+
+    if return_rank_map and return_weights:
+        return new_model, rank_map, weights_map
+    if return_rank_map:
+        return new_model, rank_map
+    return new_model
+
+
+# actual parameter reduction
+def factorize_conv2d_module(module: nn.Conv2d, k: int, use_randomized: bool = False, random_state: Optional[int] = None,
+                            n_oversamples: int = 10, n_iter: int = 2) -> nn.Sequential:
+    """
+    Create a factorized two-layer replacement for a Conv2d:
+      conv1: in_c -> k, kernel (kh,kw)
+      conv2: k -> out_c, kernel 1x1
+
+    Uses SVD (or randomized SVD if requested) to create weights.
+    """
+    W = module.weight.detach().cpu().numpy()
+    out_c, in_c, kh, kw = W.shape
+    mat = W.reshape(out_c, in_c * kh * kw)
+
+    if use_randomized and randomized_svd is not None:
+        n_components = min(mat.shape[0], mat.shape[1], max(1, k))
+        U, S, Vt = randomized_svd(mat, n_components=n_components, n_oversamples=n_oversamples,
+                                  n_iter=n_iter, random_state=random_state)
+        U = U[:, :k]
+        S = S[:k]
+        Vt = Vt[:k, :]
+    else:
+        U, S, Vt = np.linalg.svd(mat, full_matrices=False)
+        U = U[:, :k]
+        S = S[:k]
+        Vt = Vt[:k, :]
+
+    # conv1: in_c -> k (kernel kh x kw)
+    conv1 = nn.Conv2d(in_c, k, kernel_size=(kh, kw), stride=module.stride,
+                      padding=module.padding, dilation=module.dilation, bias=False)
+    # conv2: k -> out_c (1x1)
+    conv2 = nn.Conv2d(k, out_c, kernel_size=1, bias=(module.bias is not None))
+
+    Vt_reshaped = Vt.reshape(k, in_c, kh, kw)
+    conv1.weight.data.copy_(torch.from_numpy(Vt_reshaped).to(conv1.weight.device).type_as(conv1.weight))
+
+    US = (U * S[np.newaxis, :])  # (out_c, k)
+    US_reshaped = US.reshape(out_c, k, 1, 1)
+    conv2.weight.data.copy_(torch.from_numpy(US_reshaped).to(conv2.weight.device).type_as(conv2.weight))
+
+    if module.bias is not None:
+        conv2.bias.data.copy_(module.bias.data.clone())
+
+    return nn.Sequential(conv1, conv2)
+
+
+def compress_model_factorized_copy(model: nn.Module,
+                                   rank_map: Optional[Dict[str, int]] = None,
+                                   default_rank: int = 32,
+                                   use_randomized: bool = False,
+                                   random_state: Optional[int] = None,
+                                   n_oversamples: int = 10,
+                                   n_iter: int = 2) -> nn.Module:
+    """
+    Deep-copy model and replace Conv2d modules with factorized Sequential modules
+    according to rank_map (or default_rank). Only replaces when factorization reduces params.
+    """
+    new_model = copy.deepcopy(model)
+
+    for name, module in list(new_model.named_modules()):
+        if isinstance(module, nn.Conv2d):
+            k = default_rank
+            if rank_map and name in rank_map:
+                k = rank_map[name]
+            out_c, in_c, kh, kw = module.weight.shape
+            max_rank = min(out_c, in_c * kh * kw)
+            k_use = max(1, min(int(k), max_rank - 1))
+            orig_params = out_c * in_c * kh * kw + (module.bias.numel() if module.bias is not None else 0)
+            fact_params = (k_use * in_c * kh * kw) + (out_c * k_use) + (module.bias.numel() if module.bias is not None else 0)
+            if fact_params >= orig_params:
+                continue
+            # find parent object to set attribute
+            parent = new_model
+            parts = name.split(".")
+            for p in parts[:-1]:
+                parent = getattr(parent, p)
+            try:
+                setattr(parent, parts[-1], factorize_conv2d_module(module, int(k_use), use_randomized=use_randomized,
+                                                                  random_state=random_state, n_oversamples=n_oversamples,
+                                                                  n_iter=n_iter))
+            except Exception:
+                # if factorization fails, skip replacement
+                continue
 
     return new_model
 
@@ -229,9 +339,6 @@ def compress_model_arsvd(model: nn.Module,
 # Small utilities
 # -----------------------
 def model_size_bytes(model: nn.Module) -> int:
-    """
-    Return size in bytes of model.state_dict() when serialized. Useful to compute compression ratio.
-    """
     tmp = "tmp_model_for_size.pth"
     torch.save(model.state_dict(), tmp)
     size = os.path.getsize(tmp)

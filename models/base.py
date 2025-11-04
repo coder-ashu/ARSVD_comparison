@@ -14,9 +14,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-# -------------------------
-# Abstract Base Class
-# -------------------------
 class Model(ABC):
     """
     Abstract base class for all model strategies.
@@ -69,9 +66,7 @@ class BaselineModel(Model):
         return float(metric)
 
 
-# -------------------------
-# SVD Truncation Strategy
-# -------------------------
+
 class SVDTruncation(Model):
     """
     Applies SVD truncation (fixed rank or energy) to model weights.
@@ -119,9 +114,7 @@ class SVDTruncation(Model):
         return float(metric)
 
 
-# -------------------------
-# ARSVD Strategy
-# -------------------------
+
 class ARSVD(Model):
     """
     Adaptive-Rank SVD compression per layer using entropy threshold tau.
