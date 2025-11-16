@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 run_pipeline.py
 
@@ -8,15 +9,21 @@ extended to:
   - Compress baseline with ARSVD (one or multiple taus) using randomized reconstruction
   - Factorize compressed models (actual reduced weights) and evaluate them
   - Save a JSON summary with parameter counts, size (MB), compression % and metrics
+  - Plot IoU vs SVD_rank and IoU vs ARSVD_tau and save to out_dir
 """
 import argparse
 import json
 import logging
 import os
-from typing import Tuple, List
+from typing import Tuple, List, Optional, Any, Dict
 
 import torch
 import torch.nn as nn
+
+# matplotlib: ensure non-interactive backend for headless environments
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 from pipelines.train_pipeline import train_pipeline
 
@@ -50,6 +57,75 @@ def _parse_list_of_floats(s: str) -> List[float]:
     if s is None or str(s).strip() == "":
         return []
     return [float(x.strip()) for x in str(s).split(",") if x.strip()]
+
+
+def extract_iou(metrics: Any) -> Optional[float]:
+    """
+    Try to extract a single IoU value (mean IoU) from the evaluator metrics output.
+    Handles:
+      - scalar under keys like 'iou', 'IoU', 'mean_iou', 'mIoU', 'miou'
+      - dict of per-class IoUs -> returns mean
+      - list/tuple -> takes mean of numeric elements
+      - nested structures: searches recursively for common keys
+    Returns None if no IoU-like value is found.
+    """
+    if metrics is None:
+        return None
+
+    # If a number, return it
+    if isinstance(metrics, (int, float)):
+        return float(metrics)
+
+    # If dict, try common keys first, else collapse per-class values
+    if isinstance(metrics, dict):
+        # normalise keys
+        key_map = {k.lower(): k for k in metrics.keys()}
+        # candidate names
+        candidates = ['iou', 'mean_iou', 'm_iou', 'miou', 'mean iou', 'mean-iou']
+        for c in candidates:
+            if c in key_map:
+                v = metrics[key_map[c]]
+                if isinstance(v, (int, float)):
+                    return float(v)
+                # if it's a dict or list, handle below
+                metrics = v  # fallthrough to next logic
+
+        # If value still a dict: likely per-class IoUs
+        # If values are numeric, average them
+        numeric_vals = []
+        for k, v in metrics.items():
+            if isinstance(v, (int, float)):
+                numeric_vals.append(float(v))
+            elif isinstance(v, dict) or isinstance(v, list) or isinstance(v, tuple):
+                # try recursively
+                nested = extract_iou(v)
+                if nested is not None:
+                    numeric_vals.append(nested)
+        if numeric_vals:
+            return float(sum(numeric_vals) / len(numeric_vals))
+
+        # Otherwise, search recursively in nested dicts
+        for v in metrics.values():
+            nested = extract_iou(v)
+            if nested is not None:
+                return nested
+
+        return None
+
+    # If list/tuple, average numeric entries or try to extract from first element
+    if isinstance(metrics, (list, tuple)):
+        numeric_vals = [float(x) for x in metrics if isinstance(x, (int, float))]
+        if numeric_vals:
+            return float(sum(numeric_vals) / len(numeric_vals))
+        # else try recursively
+        for item in metrics:
+            nested = extract_iou(item)
+            if nested is not None:
+                return nested
+        return None
+
+    # Unknown type - give up
+    return None
 
 
 def make_adapters(data_root: str,
@@ -113,6 +189,7 @@ def make_adapters(data_root: str,
         - factorize the compressed models (actual reduced params)
         - evaluate baseline + factorized variants on the test set
         - save summary json to out_dir/experiment_summary.json
+        - plot IoU vs SVD_rank and IoU vs ARSVD_tau and save PNGs
         """
         ckpt = None
         model_obj = None
@@ -256,6 +333,72 @@ def make_adapters(data_root: str,
             json.dump(summary, f, indent=2)
 
         logger.info(f"Experiment summary saved to {summary_path}")
+
+        # --- Plotting section ---
+        try:
+            # SVD plot data
+            svd_data_x = []
+            svd_data_y = []
+            for v in summary.get("svd_variants", []):
+                rank = v.get("rank")
+                metrics = v.get("metrics")
+                iou_val = extract_iou(metrics)
+                if iou_val is None:
+                    logger.warning(f"Could not extract IoU for SVD rank={rank}; skipping in plot.")
+                    continue
+                svd_data_x.append(rank)
+                svd_data_y.append(iou_val)
+
+            if svd_data_x and svd_data_y:
+                # sort by rank
+                svd_pairs = sorted(zip(svd_data_x, svd_data_y), key=lambda x: x[0])
+                svd_x_sorted, svd_y_sorted = zip(*svd_pairs)
+                plt.figure(figsize=(6, 4))
+                plt.plot(list(svd_x_sorted), list(svd_y_sorted), marker='o')
+                plt.xlabel("SVD rank")
+                plt.ylabel("IoU")
+                plt.title("IoU vs SVD Rank")
+                plt.grid(True)
+                svd_plot_path = os.path.join(out_dir, "iou_vs_svd_rank.png")
+                plt.savefig(svd_plot_path, bbox_inches='tight')
+                plt.close()
+                logger.info(f"SVD IoU plot saved to {svd_plot_path}")
+            else:
+                logger.info("No valid SVD IoU data found; skipping SVD plot.")
+
+            # ARSVD plot data
+            arsvd_data_x = []
+            arsvd_data_y = []
+            for v in summary.get("arsvd_variants", []):
+                tau = v.get("tau")
+                metrics = v.get("metrics")
+                iou_val = extract_iou(metrics)
+                if iou_val is None:
+                    logger.warning(f"Could not extract IoU for ARSVD tau={tau}; skipping in plot.")
+                    continue
+                arsvd_data_x.append(float(tau))
+                arsvd_data_y.append(iou_val)
+
+            if arsvd_data_x and arsvd_data_y:
+                # sort by tau
+                arsvd_pairs = sorted(zip(arsvd_data_x, arsvd_data_y), key=lambda x: x[0])
+                arsvd_x_sorted, arsvd_y_sorted = zip(*arsvd_pairs)
+                plt.figure(figsize=(6, 4))
+                plt.plot(list(arsvd_x_sorted), list(arsvd_y_sorted), marker='o')
+                plt.xlabel("ARSVD tau")
+                plt.ylabel("IoU")
+                plt.title("IoU vs ARSVD Tau")
+                plt.grid(True)
+                arsvd_plot_path = os.path.join(out_dir, "iou_vs_arsvd_tau.png")
+                plt.savefig(arsvd_plot_path, bbox_inches='tight')
+                plt.close()
+                logger.info(f"ARSVD IoU plot saved to {arsvd_plot_path}")
+            else:
+                logger.info("No valid ARSVD IoU data found; skipping ARSVD plot.")
+        except Exception as e:
+            logger.exception("Failed to generate plots: %s", e)
+
+        # return the summary (same as before)
         return summary
 
     return ingest_step, train_step, eval_step
