@@ -336,65 +336,203 @@ def make_adapters(data_root: str,
 
         # --- Plotting section ---
         try:
-            # SVD plot data
+            # SVD plot data (IoU and Size)
             svd_data_x = []
             svd_data_y = []
+            svd_data_size = []
             for v in summary.get("svd_variants", []):
                 rank = v.get("rank")
                 metrics = v.get("metrics")
+                info = v.get("info", {})
                 iou_val = extract_iou(metrics)
+                size_mb = info.get("size_MB", 0)
                 if iou_val is None:
                     logger.warning(f"Could not extract IoU for SVD rank={rank}; skipping in plot.")
                     continue
                 svd_data_x.append(rank)
                 svd_data_y.append(iou_val)
+                svd_data_size.append(size_mb)
 
             if svd_data_x and svd_data_y:
                 # sort by rank
-                svd_pairs = sorted(zip(svd_data_x, svd_data_y), key=lambda x: x[0])
-                svd_x_sorted, svd_y_sorted = zip(*svd_pairs)
-                plt.figure(figsize=(6, 4))
-                plt.plot(list(svd_x_sorted), list(svd_y_sorted), marker='o')
-                plt.xlabel("SVD rank")
-                plt.ylabel("IoU")
-                plt.title("IoU vs SVD Rank")
-                plt.grid(True)
-                svd_plot_path = os.path.join(out_dir, "iou_vs_svd_rank.png")
-                plt.savefig(svd_plot_path, bbox_inches='tight')
+                svd_pairs = sorted(zip(svd_data_x, svd_data_y, svd_data_size), key=lambda x: x[0])
+                svd_x_sorted, svd_y_sorted, svd_size_sorted = zip(*svd_pairs)
+
+                # Create subplot with IoU and Size
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
+
+                # IoU subplot
+                ax1.plot(list(svd_x_sorted), list(svd_y_sorted), marker='o', color='blue', label='IoU')
+                ax1.set_xlabel("SVD Rank")
+                ax1.set_ylabel("IoU")
+                ax1.set_title("IoU vs SVD Rank")
+                ax1.grid(True, alpha=0.3)
+                ax1.legend()
+
+                # Size subplot
+                ax2.plot(list(svd_x_sorted), list(svd_size_sorted), marker='s', color='red', label='Size (MB)')
+                ax2.set_xlabel("SVD Rank")
+                ax2.set_ylabel("Model Size (MB)")
+                ax2.set_title("Model Size vs SVD Rank")
+                ax2.grid(True, alpha=0.3)
+                ax2.legend()
+
+                plt.tight_layout()
+                svd_plot_path = os.path.join(out_dir, "iou_and_size_vs_svd_rank.png")
+                plt.savefig(svd_plot_path, bbox_inches='tight', dpi=300)
                 plt.close()
-                logger.info(f"SVD IoU plot saved to {svd_plot_path}")
+                logger.info(f"SVD IoU and Size plot saved to {svd_plot_path}")
             else:
                 logger.info("No valid SVD IoU data found; skipping SVD plot.")
 
-            # ARSVD plot data
+            # ARSVD plot data (IoU and Size)
             arsvd_data_x = []
             arsvd_data_y = []
+            arsvd_data_size = []
             for v in summary.get("arsvd_variants", []):
                 tau = v.get("tau")
                 metrics = v.get("metrics")
+                info = v.get("info", {})
                 iou_val = extract_iou(metrics)
+                size_mb = info.get("size_MB", 0)
                 if iou_val is None:
                     logger.warning(f"Could not extract IoU for ARSVD tau={tau}; skipping in plot.")
                     continue
                 arsvd_data_x.append(float(tau))
                 arsvd_data_y.append(iou_val)
+                arsvd_data_size.append(size_mb)
 
             if arsvd_data_x and arsvd_data_y:
                 # sort by tau
-                arsvd_pairs = sorted(zip(arsvd_data_x, arsvd_data_y), key=lambda x: x[0])
-                arsvd_x_sorted, arsvd_y_sorted = zip(*arsvd_pairs)
-                plt.figure(figsize=(6, 4))
-                plt.plot(list(arsvd_x_sorted), list(arsvd_y_sorted), marker='o')
-                plt.xlabel("ARSVD tau")
-                plt.ylabel("IoU")
-                plt.title("IoU vs ARSVD Tau")
-                plt.grid(True)
-                arsvd_plot_path = os.path.join(out_dir, "iou_vs_arsvd_tau.png")
-                plt.savefig(arsvd_plot_path, bbox_inches='tight')
+                arsvd_pairs = sorted(zip(arsvd_data_x, arsvd_data_y, arsvd_data_size), key=lambda x: x[0])
+                arsvd_x_sorted, arsvd_y_sorted, arsvd_size_sorted = zip(*arsvd_pairs)
+
+                # Create subplot with IoU and Size
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
+
+                # IoU subplot
+                ax1.plot(list(arsvd_x_sorted), list(arsvd_y_sorted), marker='o', color='blue', label='IoU')
+                ax1.set_xlabel("ARSVD Tau")
+                ax1.set_ylabel("IoU")
+                ax1.set_title("IoU vs ARSVD Tau")
+                ax1.grid(True, alpha=0.3)
+                ax1.legend()
+
+                # Size subplot
+                ax2.plot(list(arsvd_x_sorted), list(arsvd_size_sorted), marker='s', color='red', label='Size (MB)')
+                ax2.set_xlabel("ARSVD Tau")
+                ax2.set_ylabel("Model Size (MB)")
+                ax2.set_title("Model Size vs ARSVD Tau")
+                ax2.grid(True, alpha=0.3)
+                ax2.legend()
+
+                plt.tight_layout()
+                arsvd_plot_path = os.path.join(out_dir, "iou_and_size_vs_arsvd_tau.png")
+                plt.savefig(arsvd_plot_path, bbox_inches='tight', dpi=300)
                 plt.close()
-                logger.info(f"ARSVD IoU plot saved to {arsvd_plot_path}")
+                logger.info(f"ARSVD IoU and Size plot saved to {arsvd_plot_path}")
             else:
                 logger.info("No valid ARSVD IoU data found; skipping ARSVD plot.")
+
+            # Per-layer ranks plots
+            # SVD per-layer ranks
+            svd_per_layer_data = {}
+            for v in summary.get("svd_variants", []):
+                rank = v.get("rank")
+                per_layer_ranks = v.get("per_layer_ranks", {})
+                if per_layer_ranks:
+                    svd_per_layer_data[rank] = per_layer_ranks
+
+            if svd_per_layer_data:
+                # Get all unique layer names
+                all_layers = set()
+                for ranks in svd_per_layer_data.values():
+                    all_layers.update(ranks.keys())
+                all_layers = sorted(all_layers)
+
+                # Prepare data for plotting
+                fig, ax = plt.subplots(figsize=(15, 8))
+
+                # Create x positions for layers
+                x_pos = range(len(all_layers))
+
+                # Plot lines for each rank value
+                rank_values = sorted(svd_per_layer_data.keys())
+                colors = ['blue', 'red', 'green', 'orange', 'purple']
+
+                for i, rank in enumerate(rank_values):
+                    ranks_dict = svd_per_layer_data[rank]
+                    y_values = [ranks_dict.get(layer, 0) for layer in all_layers]
+
+                    ax.plot(x_pos, y_values, marker='o', color=colors[i % len(colors)],
+                           label=f'Rank {rank}', linewidth=2, markersize=6)
+
+                ax.set_xlabel('Layer Names')
+                ax.set_ylabel('Ranks')
+                ax.set_title('Per-Layer Ranks for Different SVD Rank Values')
+                ax.set_xticks(x_pos)
+                ax.set_xticklabels([layer.replace('double_conv', 'dc').replace('maxpool_conv', 'mpc')
+                                   for layer in all_layers], rotation=45, ha='right')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                plt.tight_layout()
+
+                svd_layer_plot_path = os.path.join(out_dir, "per_layer_ranks_svd.png")
+                plt.savefig(svd_layer_plot_path, bbox_inches='tight', dpi=300)
+                plt.close()
+                logger.info(f"SVD per-layer ranks plot saved to {svd_layer_plot_path}")
+            else:
+                logger.info("No SVD per-layer rank data found; skipping SVD layer plot.")
+
+            # ARSVD per-layer ranks
+            arsvd_per_layer_data = {}
+            for v in summary.get("arsvd_variants", []):
+                tau = v.get("tau")
+                per_layer_ranks = v.get("per_layer_ranks", {})
+                if per_layer_ranks:
+                    arsvd_per_layer_data[tau] = per_layer_ranks
+
+            if arsvd_per_layer_data:
+                # Get all unique layer names
+                all_layers = set()
+                for ranks in arsvd_per_layer_data.values():
+                    all_layers.update(ranks.keys())
+                all_layers = sorted(all_layers)
+
+                # Prepare data for plotting
+                fig, ax = plt.subplots(figsize=(15, 8))
+
+                # Create x positions for layers
+                x_pos = range(len(all_layers))
+
+                # Plot lines for each tau value
+                tau_values = sorted(arsvd_per_layer_data.keys())
+                colors = ['blue', 'red', 'green', 'orange', 'purple']
+
+                for i, tau in enumerate(tau_values):
+                    ranks_dict = arsvd_per_layer_data[tau]
+                    y_values = [ranks_dict.get(layer, 0) for layer in all_layers]
+
+                    ax.plot(x_pos, y_values, marker='s', color=colors[i % len(colors)],
+                           label=f'Tau {tau:.3f}', linewidth=2, markersize=6)
+
+                ax.set_xlabel('Layer Names')
+                ax.set_ylabel('Ranks')
+                ax.set_title('Per-Layer Ranks for Different ARSVD Tau Values')
+                ax.set_xticks(x_pos)
+                ax.set_xticklabels([layer.replace('double_conv', 'dc').replace('maxpool_conv', 'mpc')
+                                   for layer in all_layers], rotation=45, ha='right')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                plt.tight_layout()
+
+                arsvd_layer_plot_path = os.path.join(out_dir, "per_layer_ranks_arsvd.png")
+                plt.savefig(arsvd_layer_plot_path, bbox_inches='tight', dpi=300)
+                plt.close()
+                logger.info(f"ARSVD per-layer ranks plot saved to {arsvd_layer_plot_path}")
+            else:
+                logger.info("No ARSVD per-layer rank data found; skipping ARSVD layer plot.")
+
         except Exception as e:
             logger.exception("Failed to generate plots: %s", e)
 
