@@ -141,6 +141,7 @@ def model_compressed_storage(model: nn.Module, rank_map: Dict[str, int], dtype=n
     return total_mb
 
 
+
 def compress_model_svd(model: nn.Module,
                        rank: Optional[int] = None,
                        energy: Optional[float] = None,
@@ -151,7 +152,8 @@ def compress_model_svd(model: nn.Module,
                        return_rank_map: bool = False,
                        return_weights: bool = False) -> Any:
     """
-    Compress a model by truncating Conv2d layer weights (dense reconstruction).
+    Compress a model by truncating Conv2d layer weights (dense reconstruction) or replacing
+    with a factorized two-layer module when it yields parameter savings.
     Backwards-compatible: by default returns new_model.
     If return_rank_map=True returns (new_model, rank_map).
     If return_rank_map & return_weights True returns (new_model, rank_map, weights_map).
@@ -163,9 +165,10 @@ def compress_model_svd(model: nn.Module,
 
     new_model = copy.deepcopy(model)
     rank_map: Dict[str, int] = {}
-    weights_map: Dict[str, torch.Tensor] = {}
+    weights_map: Dict[str, Any] = {}
 
-    for name, module in new_model.named_modules():
+    # iterate over a static list to allow in-loop replacement
+    for name, module in list(new_model.named_modules()):
         if not layer_selector(module):
             continue
         if not hasattr(module, "weight") or module.weight is None:
@@ -204,6 +207,34 @@ def compress_model_svd(model: nn.Module,
         max_rank = min(mat.shape[0], mat.shape[1])
         k_use = max(1, min(int(k), max_rank))
 
+        # Decide whether to replace with factorized module
+        orig_params = out_c * in_c * kh * kw + (module.bias.numel() if module.bias is not None else 0)
+        fact_params = (k_use * in_c * kh * kw) + (out_c * k_use) + (module.bias.numel() if module.bias is not None else 0)
+
+        if fact_params < orig_params:
+            # create factorized replacement (uses SVD internally)
+            try:
+                factor_mod = factorize_conv2d_module(module, int(k_use), use_randomized=use_randomized,
+                                                     random_state=random_state,
+                                                     n_oversamples=svd_kwargs.get("n_oversamples", 10),
+                                                     n_iter=svd_kwargs.get("n_iter", 2))
+                # set parent attribute to the factorized module
+                parent = new_model
+                parts = name.split(".")
+                for p in parts[:-1]:
+                    parent = getattr(parent, p)
+                setattr(parent, parts[-1], factor_mod)
+
+                # store maps
+                rank_map[name] = int(k_use)
+                if return_weights:
+                    weights_map[name] = factor_mod
+                continue
+            except Exception:
+                # fallback to dense truncated weight if factorization fails
+                pass
+
+        # fallback: dense truncated reconstruction (keeps same module type)
         method = "randomized" if use_randomized else "svd"
         new_w = truncate_conv2d_weight(w, method=method, k=k_use,
                                        n_oversamples=svd_kwargs.get("n_oversamples", 10),
@@ -239,15 +270,16 @@ def compress_model_arsvd(model: nn.Module,
       - Entropy is computed over energy distribution (s**2).
       - Randomized SVD approximate rank selection tuned to reasonable defaults.
       - Keeps function names & structure from original code.
+      - Replaces Conv2d modules with factorized modules when it yields parameter savings.
     """
     if layer_selector is None:
         layer_selector = default_layer_selector
 
     new_model = copy.deepcopy(model)
     rank_map: Dict[str, int] = {}
-    weights_map: Dict[str, torch.Tensor] = {}
+    weights_map: Dict[str, Any] = {}
 
-    for name, module in new_model.named_modules():
+    for name, module in list(new_model.named_modules()):
         if not layer_selector(module):
             continue
         if not hasattr(module, "weight") or module.weight is None:
@@ -278,7 +310,32 @@ def compress_model_arsvd(model: nn.Module,
         k = adaptive_rank_from_entropy(s, tau)
         k_use = max(1, min(int(k), min(mat.shape[0], mat.shape[1])))
 
-        # reconstruct using requested method
+        # Decide whether to replace with factorized module
+        orig_params = out_c * in_c * kh * kw + (module.bias.numel() if module.bias is not None else 0)
+        fact_params = (k_use * in_c * kh * kw) + (out_c * k_use) + (module.bias.numel() if module.bias is not None else 0)
+
+        if fact_params < orig_params:
+            # create factorized replacement (uses SVD internally)
+            try:
+                factor_mod = factorize_conv2d_module(module, int(k_use), use_randomized=(recon_method == "randomized"),
+                                                     random_state=random_state,
+                                                     n_oversamples=n_oversamples,
+                                                     n_iter=n_iter)
+                parent = new_model
+                parts = name.split(".")
+                for p in parts[:-1]:
+                    parent = getattr(parent, p)
+                setattr(parent, parts[-1], factor_mod)
+
+                rank_map[name] = int(k_use)
+                if return_weights:
+                    weights_map[name] = factor_mod
+                continue
+            except Exception:
+                # fallback to dense truncated weight if factorization fails
+                pass
+
+        # fallback: dense truncated reconstruction (keeps same module type)
         new_w = truncate_conv2d_weight(w, method=recon_method, k=k_use,
                                        n_oversamples=n_oversamples, n_iter=n_iter, random_state=random_state)
         module.weight.data.copy_(new_w)
