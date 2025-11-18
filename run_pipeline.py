@@ -456,28 +456,21 @@ def make_adapters(data_root: str,
                 # Create x positions for layers
                 x_pos = range(len(all_layers))
 
-                # Plot bars for each rank value
+                # Plot lines for each rank value
                 rank_values = sorted(svd_per_layer_data.keys())
                 colors = ['blue', 'red', 'green', 'orange', 'purple']
-
-                bar_width = 0.8 / len(rank_values)
 
                 for i, rank in enumerate(rank_values):
                     ranks_dict = svd_per_layer_data[rank]
                     y_values = [ranks_dict.get(layer, 0) for layer in all_layers]
 
-                    # Offset bars for each rank
-                    x_offset = [x + i * bar_width for x in x_pos]
-
-                    ax.bar(x_offset, y_values, bar_width,
-                          label=f'Rank {rank}',
-                          color=colors[i % len(colors)],
-                          alpha=0.7)
+                    ax.plot(x_pos, y_values, marker='o', color=colors[i % len(colors)],
+                           label=f'Rank {rank}', linewidth=2, markersize=6)
 
                 ax.set_xlabel('Layer Names')
                 ax.set_ylabel('Ranks')
                 ax.set_title('Per-Layer Ranks for Different SVD Rank Values')
-                ax.set_xticks([x + bar_width * (len(rank_values) - 1) / 2 for x in x_pos])
+                ax.set_xticks(x_pos)
                 ax.set_xticklabels([layer.replace('double_conv', 'dc').replace('maxpool_conv', 'mpc')
                                    for layer in all_layers], rotation=45, ha='right')
                 ax.legend()
@@ -512,28 +505,21 @@ def make_adapters(data_root: str,
                 # Create x positions for layers
                 x_pos = range(len(all_layers))
 
-                # Plot bars for each tau value
+                # Plot lines for each tau value
                 tau_values = sorted(arsvd_per_layer_data.keys())
                 colors = ['blue', 'red', 'green', 'orange', 'purple']
-
-                bar_width = 0.8 / len(tau_values)
 
                 for i, tau in enumerate(tau_values):
                     ranks_dict = arsvd_per_layer_data[tau]
                     y_values = [ranks_dict.get(layer, 0) for layer in all_layers]
 
-                    # Offset bars for each tau
-                    x_offset = [x + i * bar_width for x in x_pos]
-
-                    ax.bar(x_offset, y_values, bar_width,
-                          label=f'Tau {tau:.3f}',
-                          color=colors[i % len(colors)],
-                          alpha=0.7)
+                    ax.plot(x_pos, y_values, marker='s', color=colors[i % len(colors)],
+                           label=f'Tau {tau:.3f}', linewidth=2, markersize=6)
 
                 ax.set_xlabel('Layer Names')
                 ax.set_ylabel('Ranks')
                 ax.set_title('Per-Layer Ranks for Different ARSVD Tau Values')
-                ax.set_xticks([x + bar_width * (len(tau_values) - 1) / 2 for x in x_pos])
+                ax.set_xticks(x_pos)
                 ax.set_xticklabels([layer.replace('double_conv', 'dc').replace('maxpool_conv', 'mpc')
                                    for layer in all_layers], rotation=45, ha='right')
                 ax.legend()
