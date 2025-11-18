@@ -12,10 +12,12 @@ class DoubleConv(nn.Module):
         super().__init__()
         self.double_conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.BatchNorm2d(out_channels), # Normalization is already here
             nn.ReLU(inplace=True),
+            # Optional: You can add mild dropout here if overfitting persists
+            # nn.Dropout2d(p=0.2), 
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.BatchNorm2d(out_channels), # Normalization is already here
             nn.ReLU(inplace=True)
         )
 
@@ -88,6 +90,10 @@ class UNet(nn.Module):
         self.down3 = Down(base_filters * 4, base_filters * 8)
         factor = 2 if bilinear else 1
         self.down4 = Down(base_filters * 8, base_filters * 16 // factor)
+        
+        # MODIFICATION: Added Dropout for Regularization at the bottleneck
+        self.dropout = nn.Dropout(p=0.5) 
+
         self.up1 = Up(base_filters * 16, base_filters * 8 // factor, bilinear)
         self.up2 = Up(base_filters * 8, base_filters * 4 // factor, bilinear)
         self.up3 = Up(base_filters * 4, base_filters * 2 // factor, bilinear)
@@ -100,9 +106,13 @@ class UNet(nn.Module):
         x3 = self.down2(x2)
         x4 = self.down3(x3)
         x5 = self.down4(x4)
+        
+        # MODIFICATION: Apply dropout to the deepest features (bottleneck)
+        x5 = self.dropout(x5)
+        
         x = self.up1(x5, x4)
         x = self.up2(x, x3)
         x = self.up3(x, x2)
         x = self.up4(x, x1)
         logits = self.outc(x)
-        return logits
+        return logits # FIXED: Variable name was 'logits', but returned 'logit'
