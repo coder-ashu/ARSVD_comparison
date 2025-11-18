@@ -433,6 +433,120 @@ def make_adapters(data_root: str,
                 logger.info(f"ARSVD IoU and Size plot saved to {arsvd_plot_path}")
             else:
                 logger.info("No valid ARSVD IoU data found; skipping ARSVD plot.")
+
+            # Per-layer ranks plots
+            # SVD per-layer ranks
+            svd_per_layer_data = {}
+            for v in summary.get("svd_variants", []):
+                rank = v.get("rank")
+                per_layer_ranks = v.get("per_layer_ranks", {})
+                if per_layer_ranks:
+                    svd_per_layer_data[rank] = per_layer_ranks
+
+            if svd_per_layer_data:
+                # Get all unique layer names
+                all_layers = set()
+                for ranks in svd_per_layer_data.values():
+                    all_layers.update(ranks.keys())
+                all_layers = sorted(all_layers)
+
+                # Prepare data for plotting
+                fig, ax = plt.subplots(figsize=(15, 8))
+
+                # Create x positions for layers
+                x_pos = range(len(all_layers))
+
+                # Plot bars for each rank value
+                rank_values = sorted(svd_per_layer_data.keys())
+                colors = ['blue', 'red', 'green', 'orange', 'purple']
+
+                bar_width = 0.8 / len(rank_values)
+
+                for i, rank in enumerate(rank_values):
+                    ranks_dict = svd_per_layer_data[rank]
+                    y_values = [ranks_dict.get(layer, 0) for layer in all_layers]
+
+                    # Offset bars for each rank
+                    x_offset = [x + i * bar_width for x in x_pos]
+
+                    ax.bar(x_offset, y_values, bar_width,
+                          label=f'Rank {rank}',
+                          color=colors[i % len(colors)],
+                          alpha=0.7)
+
+                ax.set_xlabel('Layer Names')
+                ax.set_ylabel('Ranks')
+                ax.set_title('Per-Layer Ranks for Different SVD Rank Values')
+                ax.set_xticks([x + bar_width * (len(rank_values) - 1) / 2 for x in x_pos])
+                ax.set_xticklabels([layer.replace('double_conv', 'dc').replace('maxpool_conv', 'mpc')
+                                   for layer in all_layers], rotation=45, ha='right')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                plt.tight_layout()
+
+                svd_layer_plot_path = os.path.join(out_dir, "per_layer_ranks_svd.png")
+                plt.savefig(svd_layer_plot_path, bbox_inches='tight', dpi=300)
+                plt.close()
+                logger.info(f"SVD per-layer ranks plot saved to {svd_layer_plot_path}")
+            else:
+                logger.info("No SVD per-layer rank data found; skipping SVD layer plot.")
+
+            # ARSVD per-layer ranks
+            arsvd_per_layer_data = {}
+            for v in summary.get("arsvd_variants", []):
+                tau = v.get("tau")
+                per_layer_ranks = v.get("per_layer_ranks", {})
+                if per_layer_ranks:
+                    arsvd_per_layer_data[tau] = per_layer_ranks
+
+            if arsvd_per_layer_data:
+                # Get all unique layer names
+                all_layers = set()
+                for ranks in arsvd_per_layer_data.values():
+                    all_layers.update(ranks.keys())
+                all_layers = sorted(all_layers)
+
+                # Prepare data for plotting
+                fig, ax = plt.subplots(figsize=(15, 8))
+
+                # Create x positions for layers
+                x_pos = range(len(all_layers))
+
+                # Plot bars for each tau value
+                tau_values = sorted(arsvd_per_layer_data.keys())
+                colors = ['blue', 'red', 'green', 'orange', 'purple']
+
+                bar_width = 0.8 / len(tau_values)
+
+                for i, tau in enumerate(tau_values):
+                    ranks_dict = arsvd_per_layer_data[tau]
+                    y_values = [ranks_dict.get(layer, 0) for layer in all_layers]
+
+                    # Offset bars for each tau
+                    x_offset = [x + i * bar_width for x in x_pos]
+
+                    ax.bar(x_offset, y_values, bar_width,
+                          label=f'Tau {tau:.3f}',
+                          color=colors[i % len(colors)],
+                          alpha=0.7)
+
+                ax.set_xlabel('Layer Names')
+                ax.set_ylabel('Ranks')
+                ax.set_title('Per-Layer Ranks for Different ARSVD Tau Values')
+                ax.set_xticks([x + bar_width * (len(tau_values) - 1) / 2 for x in x_pos])
+                ax.set_xticklabels([layer.replace('double_conv', 'dc').replace('maxpool_conv', 'mpc')
+                                   for layer in all_layers], rotation=45, ha='right')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                plt.tight_layout()
+
+                arsvd_layer_plot_path = os.path.join(out_dir, "per_layer_ranks_arsvd.png")
+                plt.savefig(arsvd_layer_plot_path, bbox_inches='tight', dpi=300)
+                plt.close()
+                logger.info(f"ARSVD per-layer ranks plot saved to {arsvd_layer_plot_path}")
+            else:
+                logger.info("No ARSVD per-layer rank data found; skipping ARSVD layer plot.")
+
         except Exception as e:
             logger.exception("Failed to generate plots: %s", e)
 
