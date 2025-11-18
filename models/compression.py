@@ -14,11 +14,15 @@ except Exception:
 
 
 def svd_truncate_matrix(mat: np.ndarray, k: int) -> np.ndarray:
+    """
+    Exact SVD truncation: return U_k * S_k * Vt_k
+    """
     U, S, Vt = np.linalg.svd(mat, full_matrices=False)
     U_k = U[:, :k]
     S_k = S[:k]
     Vt_k = Vt[:k, :]
-    return (U_k * S_k) @ Vt_k
+    # ensure correct broadcasting: multiply columns of U_k by S_k
+    return (U_k * S_k[np.newaxis, :]) @ Vt_k
 
 
 def randomized_svd_truncate_matrix(mat: np.ndarray,
@@ -26,27 +30,51 @@ def randomized_svd_truncate_matrix(mat: np.ndarray,
                                    n_oversamples: int = 10,
                                    n_iter: int = 2,
                                    random_state: Optional[int] = None) -> np.ndarray:
+    """
+    Randomized SVD truncation using sklearn.utils.extmath.randomized_svd if available.
+    Falls back to exact SVD if randomized_svd isn't available.
+    """
     if randomized_svd is None:
         return svd_truncate_matrix(mat, k)
+    # sklearn's randomized_svd returns U, S, Vt with shapes (m, n_components), (n_components,), (n_components, n)
     U, S, Vt = randomized_svd(mat, n_components=k, n_oversamples=n_oversamples,
                               n_iter=n_iter, random_state=random_state)
-    return (U * S) @ Vt
+    return (U * S[np.newaxis, :]) @ Vt
 
 
 def adaptive_rank_from_entropy(singular_values: np.ndarray, tau: float) -> int:
+    """
+    Compute adaptive rank using the entropy rule from ARSVD papers.
+    Implementation detail:
+     - Use energy distribution p_i = s_i^2 / sum(s_j^2)
+     - Compute per-component entropy contribution: -p_i * log(p_i) (with zeros handled safely)
+     - Take cumulative entropy and find smallest k s.t. cumsum_ent >= tau * total_ent
+    Returns at least 1 and at most len(singular_values).
+    """
     s = np.array(singular_values, dtype=np.float64)
-    total = s.sum()
-    if total == 0:
+    if s.size == 0:
         return 1
-    p = s / total
-    p_safe = np.where(p <= 0, 1e-12, p)
-    ent = -p_safe * np.log(p_safe)
+    energy = s ** 2
+    total_energy = energy.sum()
+    if total_energy == 0:
+        return 1
+    p = energy / total_energy
+
+    # safe entropy: only compute -p * log(p) where p > 0
+    mask = p > 0
+    ent = np.zeros_like(p)
+    ent[mask] = -p[mask] * np.log(p[mask])
+
     cumsum_ent = np.cumsum(ent)
     total_ent = cumsum_ent[-1] if cumsum_ent.size > 0 else 0.0
     if total_ent == 0:
         return 1
+
+    # threshold
     threshold = tau * total_ent
-    k = int(np.searchsorted(cumsum_ent, threshold, side="left") + 1)
+    # searchsorted returns insertion point, +1 to include that index (1-based count)
+    idx = int(np.searchsorted(cumsum_ent, threshold, side="left"))
+    k = idx + 1
     return max(1, min(k, len(s)))
 
 
@@ -56,6 +84,11 @@ def truncate_conv2d_weight(weight: torch.Tensor,
                            n_oversamples: int = 10,
                            n_iter: int = 2,
                            random_state: Optional[int] = None) -> torch.Tensor:
+    """
+    Truncate a Conv2d weight tensor (out_c, in_c, kh, kw) to a rank-k approximation of the
+    unfolded matrix (out_c, in_c*kh*kw), then reshape back to conv shape.
+    method: 'svd' or 'randomized'
+    """
     if weight.ndim != 4:
         raise ValueError("Expected a Conv2d weight tensor of shape (out_c, in_c, kh, kw)")
 
@@ -85,6 +118,10 @@ def default_layer_selector(module: nn.Module) -> bool:
 def compressed_storage_for_svd(out_c: int, in_c: int, kh: int, kw: int, r: int, dtype=np.float32) -> float:
     """
     Return MB required to store (U_r, S_r, Vt_r) for a conv weight shaped (out_c, in_c, kh, kw).
+    Stored as:
+      U: out_c x r
+      S: r
+      Vt: r x (in_c*kh*kw)
     """
     bytes_per = np.dtype(dtype).itemsize
     u_elems = out_c * r
@@ -104,7 +141,6 @@ def model_compressed_storage(model: nn.Module, rank_map: Dict[str, int], dtype=n
     return total_mb
 
 
-
 def compress_model_svd(model: nn.Module,
                        rank: Optional[int] = None,
                        energy: Optional[float] = None,
@@ -115,8 +151,7 @@ def compress_model_svd(model: nn.Module,
                        return_rank_map: bool = False,
                        return_weights: bool = False) -> Any:
     """
-    Compress a model by truncating Conv2d layer weights.
-
+    Compress a model by truncating Conv2d layer weights (dense reconstruction).
     Backwards-compatible: by default returns new_model.
     If return_rank_map=True returns (new_model, rank_map).
     If return_rank_map & return_weights True returns (new_model, rank_map, weights_map).
@@ -200,6 +235,10 @@ def compress_model_arsvd(model: nn.Module,
     """
     ARSVD: compute per-layer rank via entropy rule and reconstruct using recon_method.
     Returns new_model by default; optionally (new_model, rank_map) or (new_model, rank_map, weights_map).
+    Implementation notes / fixes:
+      - Entropy is computed over energy distribution (s**2).
+      - Randomized SVD approximate rank selection tuned to reasonable defaults.
+      - Keeps function names & structure from original code.
     """
     if layer_selector is None:
         layer_selector = default_layer_selector
@@ -220,19 +259,26 @@ def compress_model_arsvd(model: nn.Module,
 
         # compute singular values (approx with randomized if recon_method is randomized)
         try:
+            min_dim = min(mat.shape[0], mat.shape[1])
             if (recon_method == "randomized") and (randomized_svd is not None):
-                approx_rank = min(mat.shape[0], mat.shape[1], max(128, min(mat.shape)))
-                U_tmp, S_tmp, Vt_tmp = randomized_svd(mat, n_components=approx_rank, n_oversamples=n_oversamples,
-                                                      n_iter=max(1, n_iter), random_state=random_state)
+                # choose a reasonable approximation rank for randomized SVD
+                # we avoid forcing extremely large approximate ranks; cap at min_dim
+                approx_rank = min(min_dim, max(32, min(256, min_dim)))
+                U_tmp, S_tmp, Vt_tmp = randomized_svd(mat, n_components=approx_rank,
+                                                      n_oversamples=n_oversamples,
+                                                      n_iter=max(1, n_iter),
+                                                      random_state=random_state)
                 s = S_tmp
             else:
                 s = np.linalg.svd(mat, compute_uv=False)
         except Exception:
             s = np.linalg.svd(mat, compute_uv=False)
 
+        # adaptive rank by entropy rule (energy-based)
         k = adaptive_rank_from_entropy(s, tau)
         k_use = max(1, min(int(k), min(mat.shape[0], mat.shape[1])))
 
+        # reconstruct using requested method
         new_w = truncate_conv2d_weight(w, method=recon_method, k=k_use,
                                        n_oversamples=n_oversamples, n_iter=n_iter, random_state=random_state)
         module.weight.data.copy_(new_w)
@@ -266,6 +312,7 @@ def factorize_conv2d_module(module: nn.Conv2d, k: int, use_randomized: bool = Fa
         n_components = min(mat.shape[0], mat.shape[1], max(1, k))
         U, S, Vt = randomized_svd(mat, n_components=n_components, n_oversamples=n_oversamples,
                                   n_iter=n_iter, random_state=random_state)
+        # ensure we only keep k components even if randomized returned more (numerical)
         U = U[:, :k]
         S = S[:k]
         Vt = Vt[:k, :]
