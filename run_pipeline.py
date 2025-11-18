@@ -336,63 +336,101 @@ def make_adapters(data_root: str,
 
         # --- Plotting section ---
         try:
-            # SVD plot data
+            # SVD plot data (IoU and Size)
             svd_data_x = []
             svd_data_y = []
+            svd_data_size = []
             for v in summary.get("svd_variants", []):
                 rank = v.get("rank")
                 metrics = v.get("metrics")
+                info = v.get("info", {})
                 iou_val = extract_iou(metrics)
+                size_mb = info.get("size_MB", 0)
                 if iou_val is None:
                     logger.warning(f"Could not extract IoU for SVD rank={rank}; skipping in plot.")
                     continue
                 svd_data_x.append(rank)
                 svd_data_y.append(iou_val)
+                svd_data_size.append(size_mb)
 
             if svd_data_x and svd_data_y:
                 # sort by rank
-                svd_pairs = sorted(zip(svd_data_x, svd_data_y), key=lambda x: x[0])
-                svd_x_sorted, svd_y_sorted = zip(*svd_pairs)
-                plt.figure(figsize=(6, 4))
-                plt.plot(list(svd_x_sorted), list(svd_y_sorted), marker='o')
-                plt.xlabel("SVD rank")
-                plt.ylabel("IoU")
-                plt.title("IoU vs SVD Rank")
-                plt.grid(True)
-                svd_plot_path = os.path.join(out_dir, "iou_vs_svd_rank.png")
-                plt.savefig(svd_plot_path, bbox_inches='tight')
+                svd_pairs = sorted(zip(svd_data_x, svd_data_y, svd_data_size), key=lambda x: x[0])
+                svd_x_sorted, svd_y_sorted, svd_size_sorted = zip(*svd_pairs)
+
+                # Create subplot with IoU and Size
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
+
+                # IoU subplot
+                ax1.plot(list(svd_x_sorted), list(svd_y_sorted), marker='o', color='blue', label='IoU')
+                ax1.set_xlabel("SVD Rank")
+                ax1.set_ylabel("IoU")
+                ax1.set_title("IoU vs SVD Rank")
+                ax1.grid(True, alpha=0.3)
+                ax1.legend()
+
+                # Size subplot
+                ax2.plot(list(svd_x_sorted), list(svd_size_sorted), marker='s', color='red', label='Size (MB)')
+                ax2.set_xlabel("SVD Rank")
+                ax2.set_ylabel("Model Size (MB)")
+                ax2.set_title("Model Size vs SVD Rank")
+                ax2.grid(True, alpha=0.3)
+                ax2.legend()
+
+                plt.tight_layout()
+                svd_plot_path = os.path.join(out_dir, "iou_and_size_vs_svd_rank.png")
+                plt.savefig(svd_plot_path, bbox_inches='tight', dpi=300)
                 plt.close()
-                logger.info(f"SVD IoU plot saved to {svd_plot_path}")
+                logger.info(f"SVD IoU and Size plot saved to {svd_plot_path}")
             else:
                 logger.info("No valid SVD IoU data found; skipping SVD plot.")
 
-            # ARSVD plot data
+            # ARSVD plot data (IoU and Size)
             arsvd_data_x = []
             arsvd_data_y = []
+            arsvd_data_size = []
             for v in summary.get("arsvd_variants", []):
                 tau = v.get("tau")
                 metrics = v.get("metrics")
+                info = v.get("info", {})
                 iou_val = extract_iou(metrics)
+                size_mb = info.get("size_MB", 0)
                 if iou_val is None:
                     logger.warning(f"Could not extract IoU for ARSVD tau={tau}; skipping in plot.")
                     continue
                 arsvd_data_x.append(float(tau))
                 arsvd_data_y.append(iou_val)
+                arsvd_data_size.append(size_mb)
 
             if arsvd_data_x and arsvd_data_y:
                 # sort by tau
-                arsvd_pairs = sorted(zip(arsvd_data_x, arsvd_data_y), key=lambda x: x[0])
-                arsvd_x_sorted, arsvd_y_sorted = zip(*arsvd_pairs)
-                plt.figure(figsize=(6, 4))
-                plt.plot(list(arsvd_x_sorted), list(arsvd_y_sorted), marker='o')
-                plt.xlabel("ARSVD tau")
-                plt.ylabel("IoU")
-                plt.title("IoU vs ARSVD Tau")
-                plt.grid(True)
-                arsvd_plot_path = os.path.join(out_dir, "iou_vs_arsvd_tau.png")
-                plt.savefig(arsvd_plot_path, bbox_inches='tight')
+                arsvd_pairs = sorted(zip(arsvd_data_x, arsvd_data_y, arsvd_data_size), key=lambda x: x[0])
+                arsvd_x_sorted, arsvd_y_sorted, arsvd_size_sorted = zip(*arsvd_pairs)
+
+                # Create subplot with IoU and Size
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
+
+                # IoU subplot
+                ax1.plot(list(arsvd_x_sorted), list(arsvd_y_sorted), marker='o', color='blue', label='IoU')
+                ax1.set_xlabel("ARSVD Tau")
+                ax1.set_ylabel("IoU")
+                ax1.set_title("IoU vs ARSVD Tau")
+                ax1.grid(True, alpha=0.3)
+                ax1.legend()
+
+                # Size subplot
+                ax2.plot(list(arsvd_x_sorted), list(arsvd_size_sorted), marker='s', color='red', label='Size (MB)')
+                ax2.set_xlabel("ARSVD Tau")
+                ax2.set_ylabel("Model Size (MB)")
+                ax2.set_title("Model Size vs ARSVD Tau")
+                ax2.grid(True, alpha=0.3)
+                ax2.legend()
+
+                plt.tight_layout()
+                arsvd_plot_path = os.path.join(out_dir, "iou_and_size_vs_arsvd_tau.png")
+                plt.savefig(arsvd_plot_path, bbox_inches='tight', dpi=300)
                 plt.close()
-                logger.info(f"ARSVD IoU plot saved to {arsvd_plot_path}")
+                logger.info(f"ARSVD IoU and Size plot saved to {arsvd_plot_path}")
             else:
                 logger.info("No valid ARSVD IoU data found; skipping ARSVD plot.")
         except Exception as e:
