@@ -6,6 +6,7 @@ from pycocotools.coco import COCO
 from torch.utils.data import Dataset, DataLoader
 import torch
 import torchvision.transforms as T
+from torchvision import transforms, datasets
 
 
 class COCOSegmentationDataset(Dataset):
@@ -158,3 +159,108 @@ def create_dataloaders(data_root: str, batch_size: int = 4,
         dataloaders[subset] = dataloader
 
     return dataloaders["train"], dataloaders["valid"], dataloaders["test"]
+
+# ---- append to data/dataset.py ----
+
+
+CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
+CIFAR_STD  = (0.2470, 0.2435, 0.2616)
+
+def get_cifar10_loaders(data_dir: str, batch_size: int = 128,
+                        num_workers: int = 4, shuffle_train: bool = True):
+    """
+    Returns train, val, test DataLoaders for CIFAR-10.
+    Expects data_dir to be the directory where CIFAR data will be downloaded/stored.
+    """
+    train_transform = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
+    ])
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
+    ])
+
+    train_ds = datasets.CIFAR10(root=data_dir, train=True, download=True, transform=train_transform)
+    test_ds  = datasets.CIFAR10(root=data_dir, train=False, download=True, transform=test_transform)
+
+    # Optionally split train into train/valid (common). Here we create a small val split (e.g. 5k).
+    val_size = 5000
+    if len(train_ds) > val_size:
+        train_subset, val_subset = torch.utils.data.random_split(train_ds, [len(train_ds)-val_size, val_size])
+    else:
+        train_subset, val_subset = train_ds, test_ds  # fallback: use test as val if too small
+
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=shuffle_train,
+                              num_workers=num_workers, pin_memory=True)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False,
+                            num_workers=num_workers, pin_memory=True)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False,
+                             num_workers=num_workers, pin_memory=True)
+
+    return train_loader, val_loader, test_loader
+
+
+def create_dataloaders(data_root: str, batch_size: int = 4,
+                       image_size=(256, 256), multi_class=False,
+                       num_workers: int = 2, dataset_type: str = "coco"):
+    """
+    Unified factory:
+      dataset_type: "coco" (default) or "cifar10"
+    Returns: train_loader, val_loader, test_loader
+    """
+    dataset_type = dataset_type.lower()
+    if dataset_type == "cifar10":
+        # data_root is root directory for CIFAR download/cache
+        return get_cifar10_loaders(data_root, batch_size=max(batch_size, 8), num_workers=num_workers)
+    elif dataset_type == "coco":
+        # old behavior (segmentation)
+        subsets = ["train", "valid", "test"]
+        dataloaders = {}
+
+        img_transform, mask_transform = create_transforms(image_size)
+
+        for subset in subsets:
+            subset_dir = os.path.join(data_root, subset)
+            annotation_file = os.path.join(subset_dir, "_annotations.coco.json")
+
+            if not os.path.exists(annotation_file):
+                print(f"⚠️ Skipping {subset}: missing annotations file.")
+                continue
+
+            dataset = COCOSegmentationDataset(
+                root_dir=subset_dir,
+                annotation_file=annotation_file,
+                transform=img_transform,
+                target_transform=mask_transform,
+                multi_class=multi_class,
+            )
+
+            # Clean invalid samples (missing files, corrupted images)
+            valid_samples = []
+            for i in range(len(dataset)):
+                try:
+                    img, mask = dataset[i]
+                    if img.shape[1:] != mask.shape[1:]:
+                        continue
+                    valid_samples.append(i)
+                except Exception as e:
+                    print(f"Skipping invalid sample {i}: {e}")
+
+            # Use Subset to include only valid indices
+            if valid_samples:
+                subset_data = torch.utils.data.Subset(dataset, valid_samples)
+            else:
+                subset_data = dataset
+
+            dataloader = DataLoader(subset_data, batch_size=batch_size,
+                                    shuffle=(subset == "train"),
+                                    num_workers=num_workers, pin_memory=True)
+            dataloaders[subset] = dataloader
+
+        # keep same return signature as before (train, valid, test)
+        return dataloaders.get("train", None), dataloaders.get("valid", None), dataloaders.get("test", None)
+    else:
+        raise ValueError(f"Unsupported dataset_type: {dataset_type}. Choose 'coco' or 'cifar10'.")
