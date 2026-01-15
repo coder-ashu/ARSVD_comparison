@@ -103,19 +103,19 @@ def create_transforms(image_size=(256, 256), augment=False):
     ]
 
     # Fix #3: Add data augmentation for training
+    # (Gentler augmentation for medical images)
     if augment:
         train_transforms.extend([
             T.RandomHorizontalFlip(p=0.5),
             T.RandomVerticalFlip(p=0.5),
-            T.RandomRotation(degrees=15),
-            T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.01),
+            # Removed rotation and color jitter for medical images
         ])
 
     train_transforms.extend([
         T.ToTensor(),
-        # Fix #5: Use more appropriate normalization for medical images
-        # (ImageNet stats are not ideal for brain MRI)
-        T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # Maps to [-1, 1]
+        # Using ImageNet normalization (works well in practice)
+        T.Normalize(mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225])
     ])
 
     img_transform = T.Compose(train_transforms)

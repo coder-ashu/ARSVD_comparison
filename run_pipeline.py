@@ -81,8 +81,10 @@ def make_adapters(data_root: str,
         """
         Ingest step: no input. Returns (train_loader, val_loader, test_loader).
         """
+        # Get augment parameter from outer scope
+        augment_local = augment
         return run_ingest(data_root=data_root, batch_size=batch_size, image_size=image_size,
-                          multi_class=multi_class, num_workers=4, out_dir=out_dir)
+                          multi_class=multi_class, num_workers=4, out_dir=out_dir, augment=augment_local)
 
     def train_step(prev):
         """
