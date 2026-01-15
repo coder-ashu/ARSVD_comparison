@@ -6,19 +6,18 @@ import torch.nn.functional as F
 
 class DoubleConv(nn.Module):
     """
-    (convolution => [BN] => ReLU => Dropout) * 2
+    (convolution => [BN] => ReLU) * 2
+    NO DROPOUT - matches high-performance TensorFlow implementation (IoU 0.90)
     """
-    def __init__(self, in_channels, out_channels, dropout_prob=0.1):
+    def __init__(self, in_channels, out_channels, dropout_prob=0.0):
         super().__init__()
         self.double_conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-            nn.Dropout2d(p=dropout_prob),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Dropout2d(p=dropout_prob)
+            nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
@@ -77,8 +76,9 @@ class OutConv(nn.Module):
 class UNet(nn.Module):
     """
     Standard U-Net implementation (Ronneberger et al., 2015)
+    Optimized for brain tumor segmentation - NO DROPOUT
     """
-    def __init__(self, n_channels=3, n_classes=1, base_filters=64, bilinear=True, dropout_prob=0.05):
+    def __init__(self, n_channels=3, n_classes=1, base_filters=64, bilinear=True, dropout_prob=0.0):
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes

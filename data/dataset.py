@@ -67,7 +67,11 @@ class COCOSegmentationDataset(Dataset):
             if not isinstance(image, torch.Tensor):
                 image = image.ToTensor()
         else:
-            image = image.ToTensor()
+            image = torch.from_numpy(np.array(image)).float().permute(2, 0, 1)  # (H,W,3) -> (3,H,W)
+
+        # CRITICAL: Simple normalization (divide by 255) instead of ImageNet stats
+        # This matches the TensorFlow implementation that achieves IoU 0.90
+        image = image / 255.0  # Maps [0, 255] -> [0, 1]
 
         # For mask: ensure we return a 1 x H x W tensor of dtype long (for class ids)
         if self.target_transform is not None:
@@ -83,7 +87,8 @@ class COCOSegmentationDataset(Dataset):
                     # if mask is CxHxW, reduce to single channel if necessary
                     mask = mask[0:1].long()
         else:
-            mask = torch.from_numpy(np.array(mask)).long().unsqueeze(0)
+            mask = torch.from_numpy(np.array(mask)).float() / 255.0  # Also normalize mask
+            mask = mask.unsqueeze(0)  # (H, W) -> (1, H, W)
 
         return image, mask
 
@@ -113,9 +118,8 @@ def create_transforms(image_size=(256, 256), augment=False):
 
     train_transforms.extend([
         T.ToTensor(),
-        # Using ImageNet normalization (works well in practice)
-        T.Normalize(mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225])
+        # No normalization! Using simple /255.0 in __getitem__ instead
+        # This matches the TensorFlow implementation achieving IoU 0.90
     ])
 
     img_transform = T.Compose(train_transforms)

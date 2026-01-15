@@ -65,10 +65,11 @@ def make_adapters(data_root: str,
                   finetune_compressed: bool = False,
                   finetune_epochs: int = 3,
                   finetune_lr: float = 1e-5,
-                  dropout_prob: float = 0.1,
-                  patience: int = 7,
-                  weight_decay: float = 1e-5,
-                  augment: bool = True):
+                  dropout_prob: float = 0.0,
+                  patience: int = 20,
+                  weight_decay: float = 0.0,
+                  augment: bool = False,
+                  use_dice_loss: bool = True):
     """
     Build pipeline-adapter callables that match the expected chaining behavior.
     """
@@ -105,7 +106,7 @@ def make_adapters(data_root: str,
         model = UNet(n_channels=3, n_classes=1, base_filters=64, dropout_prob=dropout_prob)
         result = train_fn(model=model, train_loader=train_loader, val_loader=val_loader,
                           device=device, epochs=epochs, lr=lr, out_dir=out_dir,
-                          patience=patience, weight_decay=weight_decay)
+                          patience=patience, weight_decay=weight_decay, use_dice_loss=use_dice_loss)
         # train_fn is expected to return a dict with at least 'ckpt' (path to saved checkpoint).
         return result
 
@@ -284,14 +285,16 @@ def main():
                    help="If set, will call train_fn to fine-tune each compressed model (train_fn must accept the same signature).")
     p.add_argument("--finetune_epochs", type=int, default=3)
     p.add_argument("--finetune_lr", type=float, default=1e-5)
-    p.add_argument("--dropout_prob", type=float, default=0.05,
-                   help="Dropout probability for U-Net (default: 0.05)")
-    p.add_argument("--patience", type=int, default=10,
-                   help="Early stopping patience (default: 10)")
-    p.add_argument("--weight_decay", type=float, default=5e-6,
-                   help="L2 regularization weight decay (default: 5e-6)")
+    p.add_argument("--dropout_prob", type=float, default=0.0,
+                   help="Dropout probability for U-Net (default: 0.0 - NO DROPOUT)")
+    p.add_argument("--patience", type=int, default=20,
+                   help="Early stopping patience (default: 20)")
+    p.add_argument("--weight_decay", type=float, default=0.0,
+                   help="L2 regularization weight decay (default: 0.0 - NO WEIGHT DECAY)")
     p.add_argument("--augment", action="store_true",
                    help="Enable data augmentation for training (default: False)")
+    p.add_argument("--use_dice_loss", action="store_true",
+                   help="Use Dice Loss instead of BCE (default: False)")
 
     args = p.parse_args()
 
@@ -318,6 +321,7 @@ def main():
         patience=args.patience,
         weight_decay=args.weight_decay,
         augment=args.augment,
+        use_dice_loss=args.use_dice_loss,
     )
 
     pipeline = train_pipeline(
