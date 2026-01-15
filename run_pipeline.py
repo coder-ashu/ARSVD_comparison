@@ -134,7 +134,7 @@ def make_adapters(data_root: str,
                 raise FileNotFoundError("No checkpoint found to evaluate.")
 
         _, _, test_loader = run_ingest(data_root=data_root, batch_size=batch_size, image_size=image_size,
-                                       multi_class=multi_class, num_workers=2, out_dir=out_dir)
+                                       multi_class=multi_class, num_workers=2, out_dir=out_dir, augment=False)
 
         baseline = UNet(n_channels=3, n_classes=1)
         baseline.load_state_dict(torch.load(ckpt, map_location="cpu"))

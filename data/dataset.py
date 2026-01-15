@@ -63,32 +63,38 @@ class COCOSegmentationDataset(Dataset):
         # If user provided transforms, apply; otherwise convert to tensor
         if self.transform is not None:
             image = self.transform(image)
-            # if transform returns PIL (unlikely), convert
+            # ToTensor() already normalizes to [0,1], so no need to divide by 255
             if not isinstance(image, torch.Tensor):
-                image = image.ToTensor()
+                image = T.ToTensor()(image)
         else:
+            # Manual conversion without transforms
             image = torch.from_numpy(np.array(image)).float().permute(2, 0, 1)  # (H,W,3) -> (3,H,W)
+            # Normalize to [0,1] only when transforms are None
+            image = image / 255.0  # Maps [0, 255] -> [0, 1]
 
-        # CRITICAL: Simple normalization (divide by 255) instead of ImageNet stats
-        # This matches the TensorFlow implementation that achieves IoU 0.90
-        image = image / 255.0  # Maps [0, 255] -> [0, 1]
-
-        # For mask: ensure we return a 1 x H x W tensor of dtype long (for class ids)
+        # For mask: ensure we return a 1 x H x W tensor
+        # CRITICAL: For binary segmentation, masks should be binary [0 or 1], not continuous [0,1]
         if self.target_transform is not None:
             mask = self.target_transform(mask)
             # if target_transform returned PIL, convert explicitly
             if not isinstance(mask, torch.Tensor):
-                mask = torch.from_numpy(np.array(mask)).long().unsqueeze(0)
+                mask = torch.from_numpy(np.array(mask)).float()
             else:
-                # ensure type & shape
-                if mask.ndim == 2:
-                    mask = mask.long().unsqueeze(0)
-                elif mask.ndim == 3 and mask.shape[0] != 1:
-                    # if mask is CxHxW, reduce to single channel if necessary
-                    mask = mask[0:1].long()
+                mask = mask.float()
+            
+            # Ensure proper shape: (H, W) -> (1, H, W)
+            if mask.ndim == 2:
+                mask = mask.unsqueeze(0)
+            elif mask.ndim == 3 and mask.shape[0] != 1:
+                mask = mask[0:1]
         else:
-            mask = torch.from_numpy(np.array(mask)).float() / 255.0  # Also normalize mask
-            mask = mask.unsqueeze(0)  # (H, W) -> (1, H, W)
+            mask = torch.from_numpy(np.array(mask)).float()
+            if mask.ndim == 2:
+                mask = mask.unsqueeze(0)  # (H, W) -> (1, H, W)
+        
+        # Binarize mask: values > 0.5 become 1.0, <= 0.5 become 0.0
+        # This ensures binary segmentation masks are properly formatted after transforms
+        mask = (mask > 0.5).float()
 
         return image, mask
 

@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from models.unet import UNet
+from models.evaluation import SegmentationEvaluator
 
 
 class DiceLoss(nn.Module):
@@ -59,16 +60,18 @@ def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    # Learning rate scheduler (more aggressive for Dice Loss)
+    # Learning rate scheduler - more aggressive reduction for better convergence
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.1, patience=5  # Factor 0.1 like TensorFlow impl
+        optimizer, mode='min', factor=0.5, patience=5, verbose=True, min_lr=1e-6
     )
 
-    history = {"train_loss": [], "val_loss": []}
+    history = {"train_loss": [], "val_loss": [], "val_dice": [], "val_iou": []}
 
     # Early stopping variables
     best_val_loss = float('inf')
+    best_val_dice = 0.0
     epochs_no_improve = 0
+    evaluator = SegmentationEvaluator(threshold=0.5)
 
     for ep in range(epochs):
         model.train()
@@ -112,35 +115,67 @@ def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
                 val_running += float(vloss.detach()) * xb.size(0)
 
         val_loss = val_running / len(val_loader.dataset)
+        
+        # Calculate validation metrics (Dice, IoU) for monitoring
+        val_metrics = evaluator.calculate_score(model, val_loader, device=device)
+        val_dice = val_metrics["dice"]
+        val_iou = val_metrics["iou"]
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
-        print(f"Epoch {ep+1}/{epochs} train_loss={train_loss:.4f} val_loss={val_loss:.4f}")
+        history["val_dice"].append(val_dice)
+        history["val_iou"].append(val_iou)
+        
+        print(f"Epoch {ep+1}/{epochs} train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
+              f"val_dice={val_dice:.4f} val_iou={val_iou:.4f}")
 
         # Step the learning rate scheduler
         scheduler.step(val_loss)
 
-        # Early stopping logic
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            epochs_no_improve = 0
-            # Save best model
-            os.makedirs(out_dir, exist_ok=True)
-            ckpt_path = os.path.join(out_dir, "baseline_trained.pth")
-            torch.save(model.state_dict(), ckpt_path)
-            print(f"✓ Validation loss improved to {val_loss:.4f}. Saving model...")
+        # Early stopping logic - use Dice score for segmentation (better metric than loss)
+        if use_dice_loss:
+            # For Dice loss, higher Dice is better
+            if val_dice > best_val_dice:
+                best_val_dice = val_dice
+                best_val_loss = val_loss
+                epochs_no_improve = 0
+                # Save best model
+                os.makedirs(out_dir, exist_ok=True)
+                ckpt_path = os.path.join(out_dir, "baseline_trained.pth")
+                torch.save(model.state_dict(), ckpt_path)
+                print(f"✓ Validation Dice improved to {val_dice:.4f} (loss={val_loss:.4f}). Saving model...")
+            else:
+                epochs_no_improve += 1
+                print(f"No Dice improvement for {epochs_no_improve} epoch(s) (best={best_val_dice:.4f})")
         else:
-            epochs_no_improve += 1
-            print(f"No improvement for {epochs_no_improve} epoch(s)")
-            if epochs_no_improve >= patience:
-                print(f"Early stopping at epoch {ep+1} (patience={patience})")
-                break
+            # For BCE loss, lower loss is better
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_val_dice = val_dice
+                epochs_no_improve = 0
+                # Save best model
+                os.makedirs(out_dir, exist_ok=True)
+                ckpt_path = os.path.join(out_dir, "baseline_trained.pth")
+                torch.save(model.state_dict(), ckpt_path)
+                print(f"✓ Validation loss improved to {val_loss:.4f} (dice={val_dice:.4f}). Saving model...")
+            else:
+                epochs_no_improve += 1
+                print(f"No loss improvement for {epochs_no_improve} epoch(s) (best={best_val_loss:.4f})")
+        
+        if epochs_no_improve >= patience:
+            print(f"Early stopping at epoch {ep+1} (patience={patience})")
+            break
 
     # Save training history
     with open(os.path.join(out_dir, "train_history.json"), "w") as f:
-        json.dump(history, f)
+        json.dump(history, f, indent=2)
 
-    return {"ckpt": ckpt_path, "history": history}
+    return {
+        "ckpt": ckpt_path, 
+        "history": history,
+        "best_val_dice": best_val_dice,
+        "best_val_iou": history["val_iou"][-1] if history["val_iou"] else 0.0
+    }
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
