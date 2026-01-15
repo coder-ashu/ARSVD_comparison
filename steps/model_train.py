@@ -58,11 +58,20 @@ def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
         criterion = nn.BCEWithLogitsLoss()
         print("Using BCE Loss")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # CRITICAL FIX: Use higher learning rate for larger models (base_filters=96)
+    # Larger models need higher LR to learn effectively
+    effective_lr = lr
+    total_params = sum(p.numel() for p in model.parameters())
+    if total_params > 10e6:  # If model has >10M parameters
+        effective_lr = lr * 1.5  # Increase LR by 50% for larger models
+        print(f"Model has {total_params/1e6:.1f}M parameters. Using adjusted LR: {effective_lr:.6f}")
+    
+    optimizer = torch.optim.Adam(model.parameters(), lr=effective_lr, weight_decay=weight_decay)
 
-    # Learning rate scheduler - more aggressive reduction for better convergence
+    # Learning rate scheduler - FIXED: Less aggressive to prevent premature LR reduction
+    # Increased patience so LR doesn't drop too quickly when validation loss plateaus
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=True, min_lr=1e-6
+        optimizer, mode='min', factor=0.5, patience=8, verbose=True, min_lr=1e-5
     )
 
     history = {"train_loss": [], "val_loss": [], "val_dice": [], "val_iou": []}
@@ -91,8 +100,9 @@ def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
 
             loss.backward()
 
-            # Gradient clipping for stability
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # Gradient clipping for stability - FIXED: Less aggressive clipping
+            # Higher max_norm allows gradients to flow better, preventing learning stagnation
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
 
             optimizer.step()
             running_loss += float(loss.detach()) * xb.size(0)
@@ -126,11 +136,18 @@ def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
         history["val_dice"].append(val_dice)
         history["val_iou"].append(val_iou)
         
+        # Get current learning rate for monitoring
+        current_lr = optimizer.param_groups[0]['lr']
+        
         print(f"Epoch {ep+1}/{epochs} train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-              f"val_dice={val_dice:.4f} val_iou={val_iou:.4f}")
+              f"val_dice={val_dice:.4f} val_iou={val_iou:.4f} lr={current_lr:.6f}")
 
         # Step the learning rate scheduler
         scheduler.step(val_loss)
+        
+        # FIXED: Warn if learning rate gets too low (might be causing stagnation)
+        if current_lr < 1e-5:
+            print(f"⚠️  WARNING: Learning rate is very low ({current_lr:.6f}). Model might have stopped learning.")
 
         # Early stopping logic - use Dice score for segmentation (better metric than loss)
         if use_dice_loss:

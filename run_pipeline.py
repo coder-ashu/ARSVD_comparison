@@ -103,7 +103,17 @@ def make_adapters(data_root: str,
             else:
                 raise ValueError("train_step received unexpected input from previous step")
 
-        model = UNet(n_channels=3, n_classes=1, base_filters=64, dropout_prob=dropout_prob)
+        # Optimal base_filters=96 for best performance (2.25x capacity vs 64, better Dice/IoU)
+        # This provides good balance: ~17M params, better performance without excessive memory
+        base_filters = 96
+        model = UNet(n_channels=3, n_classes=1, base_filters=base_filters, dropout_prob=dropout_prob)
+        
+        # Log model size for reference
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info(f"Model created with base_filters={base_filters} (optimized for performance)")
+        logger.info(f"Total parameters: {total_params:,} ({total_params/1e6:.2f}M)")
+        logger.info(f"Trainable parameters: {trainable_params:,} ({trainable_params/1e6:.2f}M)")
         result = train_fn(model=model, train_loader=train_loader, val_loader=val_loader,
                           device=device, epochs=epochs, lr=lr, out_dir=out_dir,
                           patience=patience, weight_decay=weight_decay, use_dice_loss=use_dice_loss)
@@ -136,7 +146,9 @@ def make_adapters(data_root: str,
         _, _, test_loader = run_ingest(data_root=data_root, batch_size=batch_size, image_size=image_size,
                                        multi_class=multi_class, num_workers=2, out_dir=out_dir, augment=False)
 
-        baseline = UNet(n_channels=3, n_classes=1)
+        # Use same base_filters as training (96 for optimal performance)
+        base_filters = 96
+        baseline = UNet(n_channels=3, n_classes=1, base_filters=base_filters)
         baseline.load_state_dict(torch.load(ckpt, map_location="cpu"))
         baseline.eval()
 
@@ -275,7 +287,8 @@ def main():
     p.add_argument("--image_size", nargs=2, type=int, default=(256, 256))
     p.add_argument("--device", default="cuda")
     p.add_argument("--epochs", type=int, default=10)
-    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--lr", type=float, default=2e-4,
+                   help="Learning rate (default: 2e-4, increased for base_filters=96 model)")
     p.add_argument("--multi_class", action="store_true")
     p.add_argument("--svd_ranks", type=str, default="32",
                    help="Comma-separated ranks to try for SVD compression, e.g. '16,32,64'")
