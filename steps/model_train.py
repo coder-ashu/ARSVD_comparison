@@ -70,8 +70,9 @@ def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
 
     # Learning rate scheduler - FIXED: Less aggressive to prevent premature LR reduction
     # Increased patience so LR doesn't drop too quickly when validation loss plateaus
+    # Note: verbose parameter not available in all PyTorch versions, removed for compatibility
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=8, verbose=True, min_lr=1e-5
+        optimizer, mode='min', factor=0.5, patience=8, min_lr=1e-5
     )
 
     history = {"train_loss": [], "val_loss": [], "val_dice": [], "val_iou": []}
