@@ -29,7 +29,7 @@ def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
 
     # Fix #7: Add learning rate scheduler
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3, verbose=True
+        optimizer, mode='min', factor=0.5, patience=3
     )
 
     criterion = nn.BCEWithLogitsLoss()
