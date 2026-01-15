@@ -34,7 +34,15 @@ def randomized_svd_truncate_matrix(mat: np.ndarray,
 
 
 def adaptive_rank_from_entropy(singular_values: np.ndarray, tau: float) -> int:
+    """
+    Adaptive rank selection using entropy of singular value distribution.
+
+    Fix #6: Added minimum rank constraint to prevent catastrophic failure.
+    Ensures at least 30% of full rank is preserved and 90% energy captured.
+    """
     s = np.array(singular_values, dtype=np.float64)
+
+    # Method 1: Entropy-based selection
     total = s.sum()
     if total == 0:
         return 1
@@ -42,11 +50,25 @@ def adaptive_rank_from_entropy(singular_values: np.ndarray, tau: float) -> int:
     p_safe = np.where(p <= 0, 1e-12, p)
     ent = -p_safe * np.log(p_safe)
     cumsum_ent = np.cumsum(ent)
-    total_ent = cumsum_ent[-1] if cumsum_ent.size > 0 else 0.0
+    total_ent = cumsum_ent[-1] if cumsum_ent.size > 0 else 1.0
+
     if total_ent == 0:
         return 1
+
     threshold = tau * total_ent
-    k = int(np.searchsorted(cumsum_ent, threshold, side="left") + 1)
+    k_ent = int(np.searchsorted(cumsum_ent, threshold, side="left") + 1)
+
+    # Method 2: Energy-based sanity check (capture at least 90% energy)
+    energy = s ** 2
+    energy_cumsum = np.cumsum(energy) / energy.sum()
+    k_energy = int(np.searchsorted(energy_cumsum, 0.90, side="right") + 1)
+
+    # Fix #6: Minimum rank constraints to prevent failure
+    min_rank = max(5, int(0.3 * len(s)))  # At least 5 or 30% of full rank
+
+    # Use maximum of three methods (conservative approach)
+    k = max(min_rank, k_ent, k_energy)
+
     return max(1, min(k, len(s)))
 
 

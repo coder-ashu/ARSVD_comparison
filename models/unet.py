@@ -6,17 +6,19 @@ import torch.nn.functional as F
 
 class DoubleConv(nn.Module):
     """
-    (convolution => [BN] => ReLU) * 2
+    (convolution => [BN] => ReLU => Dropout) * 2
     """
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, dropout_prob=0.1):
         super().__init__()
         self.double_conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
+            nn.Dropout2d(p=dropout_prob),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(p=dropout_prob)
         )
 
     def forward(self, x):
@@ -27,11 +29,11 @@ class Down(nn.Module):
     """
     Downscaling with maxpool then double conv
     """
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, dropout_prob=0.1):
         super().__init__()
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
-            DoubleConv(in_channels, out_channels)
+            DoubleConv(in_channels, out_channels, dropout_prob=dropout_prob)
         )
 
     def forward(self, x):
@@ -42,15 +44,15 @@ class Up(nn.Module):
     """
     Upscaling then double conv
     """
-    def __init__(self, in_channels, out_channels, bilinear=True):
+    def __init__(self, in_channels, out_channels, bilinear=True, dropout_prob=0.1):
         super().__init__()
 
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            self.conv = DoubleConv(in_channels, out_channels)
+            self.conv = DoubleConv(in_channels, out_channels, dropout_prob=dropout_prob)
         else:
             self.up = nn.ConvTranspose2d(in_channels // 2, in_channels // 2, kernel_size=2, stride=2)
-            self.conv = DoubleConv(in_channels, out_channels)
+            self.conv = DoubleConv(in_channels, out_channels, dropout_prob=dropout_prob)
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
@@ -76,22 +78,23 @@ class UNet(nn.Module):
     """
     Standard U-Net implementation (Ronneberger et al., 2015)
     """
-    def __init__(self, n_channels=3, n_classes=1, base_filters=64, bilinear=True):
+    def __init__(self, n_channels=3, n_classes=1, base_filters=64, bilinear=True, dropout_prob=0.1):
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
+        self.dropout_prob = dropout_prob
 
-        self.inc = DoubleConv(n_channels, base_filters)
-        self.down1 = Down(base_filters, base_filters * 2)
-        self.down2 = Down(base_filters * 2, base_filters * 4)
-        self.down3 = Down(base_filters * 4, base_filters * 8)
+        self.inc = DoubleConv(n_channels, base_filters, dropout_prob=dropout_prob)
+        self.down1 = Down(base_filters, base_filters * 2, dropout_prob=dropout_prob)
+        self.down2 = Down(base_filters * 2, base_filters * 4, dropout_prob=dropout_prob)
+        self.down3 = Down(base_filters * 4, base_filters * 8, dropout_prob=dropout_prob)
         factor = 2 if bilinear else 1
-        self.down4 = Down(base_filters * 8, base_filters * 16 // factor)
-        self.up1 = Up(base_filters * 16, base_filters * 8 // factor, bilinear)
-        self.up2 = Up(base_filters * 8, base_filters * 4 // factor, bilinear)
-        self.up3 = Up(base_filters * 4, base_filters * 2 // factor, bilinear)
-        self.up4 = Up(base_filters * 2, base_filters, bilinear)
+        self.down4 = Down(base_filters * 8, base_filters * 16 // factor, dropout_prob=dropout_prob)
+        self.up1 = Up(base_filters * 16, base_filters * 8 // factor, bilinear, dropout_prob=dropout_prob)
+        self.up2 = Up(base_filters * 8, base_filters * 4 // factor, bilinear, dropout_prob=dropout_prob)
+        self.up3 = Up(base_filters * 4, base_filters * 2 // factor, bilinear, dropout_prob=dropout_prob)
+        self.up4 = Up(base_filters * 2, base_filters, bilinear, dropout_prob=dropout_prob)
         self.outc = OutConv(base_filters, n_classes)
 
     def forward(self, x):

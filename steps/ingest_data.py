@@ -7,14 +7,15 @@ from typing import Tuple
 import torch
 from data.dataset import create_dataloaders
 
-def run_ingest(data_root: str, batch_size: int = 8, image_size=(256,256), multi_class=False, num_workers=4, out_dir="./artifacts"):
+def run_ingest(data_root: str, batch_size: int = 8, image_size=(256,256), multi_class=False, num_workers=4, out_dir="./artifacts", augment: bool = True):
     os.makedirs(out_dir, exist_ok=True)
     train_loader, val_loader, test_loader = create_dataloaders(
         data_root=data_root,
         batch_size=batch_size,
         image_size=image_size,
         multi_class=multi_class,
-        num_workers=num_workers
+        num_workers=num_workers,
+        augment=augment
     )
 
     # Save a small manifest about the dataset shapes and counts
@@ -24,7 +25,8 @@ def run_ingest(data_root: str, batch_size: int = 8, image_size=(256,256), multi_
         "image_size": image_size,
         "train_batches": len(train_loader),
         "val_batches": len(val_loader),
-        "test_batches": len(test_loader)
+        "test_batches": len(test_loader),
+        "augment": augment
     }
     with open(os.path.join(out_dir, "dataset_manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)

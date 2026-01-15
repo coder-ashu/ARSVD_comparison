@@ -64,7 +64,10 @@ def make_adapters(data_root: str,
                   arsvd_taus: List[float] = None,
                   finetune_compressed: bool = False,
                   finetune_epochs: int = 3,
-                  finetune_lr: float = 1e-5):
+                  finetune_lr: float = 1e-5,
+                  dropout_prob: float = 0.1,
+                  patience: int = 7,
+                  weight_decay: float = 1e-5):
     """
     Build pipeline-adapter callables that match the expected chaining behavior.
     """
@@ -98,9 +101,10 @@ def make_adapters(data_root: str,
             else:
                 raise ValueError("train_step received unexpected input from previous step")
 
-        model = UNet(n_channels=3, n_classes=1, base_filters=64)
+        model = UNet(n_channels=3, n_classes=1, base_filters=64, dropout_prob=dropout_prob)
         result = train_fn(model=model, train_loader=train_loader, val_loader=val_loader,
-                          device=device, epochs=epochs, lr=lr, out_dir=out_dir)
+                          device=device, epochs=epochs, lr=lr, out_dir=out_dir,
+                          patience=patience, weight_decay=weight_decay)
         # train_fn is expected to return a dict with at least 'ckpt' (path to saved checkpoint).
         return result
 
@@ -279,6 +283,12 @@ def main():
                    help="If set, will call train_fn to fine-tune each compressed model (train_fn must accept the same signature).")
     p.add_argument("--finetune_epochs", type=int, default=3)
     p.add_argument("--finetune_lr", type=float, default=1e-5)
+    p.add_argument("--dropout_prob", type=float, default=0.1,
+                   help="Dropout probability for U-Net (default: 0.1)")
+    p.add_argument("--patience", type=int, default=7,
+                   help="Early stopping patience (default: 7)")
+    p.add_argument("--weight_decay", type=float, default=1e-5,
+                   help="L2 regularization weight decay (default: 1e-5)")
 
     args = p.parse_args()
 
@@ -301,6 +311,9 @@ def main():
         finetune_compressed=args.finetune_compressed,
         finetune_epochs=args.finetune_epochs,
         finetune_lr=args.finetune_lr,
+        dropout_prob=args.dropout_prob,
+        patience=args.patience,
+        weight_decay=args.weight_decay,
     )
 
     pipeline = train_pipeline(

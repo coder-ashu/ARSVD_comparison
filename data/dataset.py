@@ -90,16 +90,35 @@ class COCOSegmentationDataset(Dataset):
 
 
 
-def create_transforms(image_size=(256, 256)):
+def create_transforms(image_size=(256, 256), augment=False):
     """
     Basic image & mask transforms for segmentation tasks.
+
+    Args:
+        image_size: Target size (H, W)
+        augment: If True, apply data augmentation (recommended for training set)
     """
-    img_transform = T.Compose([
+    train_transforms = [
         T.Resize(image_size),
+    ]
+
+    # Fix #3: Add data augmentation for training
+    if augment:
+        train_transforms.extend([
+            T.RandomHorizontalFlip(p=0.5),
+            T.RandomVerticalFlip(p=0.5),
+            T.RandomRotation(degrees=15),
+            T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.01),
+        ])
+
+    train_transforms.extend([
         T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225])
+        # Fix #5: Use more appropriate normalization for medical images
+        # (ImageNet stats are not ideal for brain MRI)
+        T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # Maps to [-1, 1]
     ])
+
+    img_transform = T.Compose(train_transforms)
 
     mask_transform = T.Compose([
         T.Resize(image_size, interpolation=T.InterpolationMode.NEAREST)
@@ -109,15 +128,16 @@ def create_transforms(image_size=(256, 256)):
 
 def create_dataloaders(data_root: str, batch_size: int = 4,
                        image_size=(256, 256), multi_class=False,
-                       num_workers: int = 2):
+                       num_workers: int = 2, augment: bool = True):
     """
     Creates train, val, test DataLoaders for COCO-style datasets.
     Cleans invalid samples automatically.
+
+    Args:
+        augment: If True, apply data augmentation to training set (recommended: True)
     """
     subsets = ["train", "valid", "test"]
     dataloaders = {}
-
-    img_transform, mask_transform = create_transforms(image_size)
 
     for subset in subsets:
         subset_dir = os.path.join(data_root, subset)
@@ -126,6 +146,10 @@ def create_dataloaders(data_root: str, batch_size: int = 4,
         if not os.path.exists(annotation_file):
             print(f"⚠️ Skipping {subset}: missing annotations file.")
             continue
+
+        # Fix #3: Apply augmentation only to training set
+        use_augment = (subset == "train") and augment
+        img_transform, mask_transform = create_transforms(image_size, augment=use_augment)
 
         dataset = COCOSegmentationDataset(
             root_dir=subset_dir,
