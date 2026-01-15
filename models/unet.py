@@ -78,7 +78,7 @@ class UNet(nn.Module):
     """
     Standard U-Net implementation (Ronneberger et al., 2015)
     """
-    def __init__(self, n_channels=3, n_classes=1, base_filters=64, bilinear=True, dropout_prob=0.1):
+    def __init__(self, n_channels=3, n_classes=1, base_filters=64, bilinear=True, dropout_prob=0.05):
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes

@@ -284,12 +284,12 @@ def main():
                    help="If set, will call train_fn to fine-tune each compressed model (train_fn must accept the same signature).")
     p.add_argument("--finetune_epochs", type=int, default=3)
     p.add_argument("--finetune_lr", type=float, default=1e-5)
-    p.add_argument("--dropout_prob", type=float, default=0.1,
-                   help="Dropout probability for U-Net (default: 0.1)")
-    p.add_argument("--patience", type=int, default=7,
-                   help="Early stopping patience (default: 7)")
-    p.add_argument("--weight_decay", type=float, default=1e-5,
-                   help="L2 regularization weight decay (default: 1e-5)")
+    p.add_argument("--dropout_prob", type=float, default=0.05,
+                   help="Dropout probability for U-Net (default: 0.05)")
+    p.add_argument("--patience", type=int, default=10,
+                   help="Early stopping patience (default: 10)")
+    p.add_argument("--weight_decay", type=float, default=5e-6,
+                   help="L2 regularization weight decay (default: 5e-6)")
     p.add_argument("--augment", action="store_true",
                    help="Enable data augmentation for training (default: False)")
 

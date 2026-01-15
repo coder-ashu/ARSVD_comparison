@@ -13,7 +13,7 @@ from models.unet import UNet
 
 def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, device: str = "cuda",
              epochs: int = 10, lr: float = 1e-4, out_dir: str = "./artifacts",
-             patience: int = 7, weight_decay: float = 1e-5) -> Dict[str, Any]:
+             patience: int = 10, weight_decay: float = 5e-6) -> Dict[str, Any]:
     """
     Training function with:
     - Weight decay (L2 regularization)
@@ -114,7 +114,7 @@ if __name__ == "__main__":
     from steps.ingest_data import run_ingest
     train_loader, val_loader, _ = run_ingest(args.data_root, batch_size=args.batch_size, out_dir=args.train_ckpt_out)
 
-    model = UNet(n_channels=3, n_classes=1, base_filters=64, dropout_prob=0.1)
+    model = UNet(n_channels=3, n_classes=1, base_filters=64, dropout_prob=0.05)
     result = train_fn(model, train_loader, val_loader, device=args.device, epochs=args.epochs,
                      lr=args.lr, out_dir=args.train_ckpt_out, patience=args.patience,
                      weight_decay=args.weight_decay)
