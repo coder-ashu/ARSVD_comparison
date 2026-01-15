@@ -67,7 +67,8 @@ def make_adapters(data_root: str,
                   finetune_lr: float = 1e-5,
                   dropout_prob: float = 0.1,
                   patience: int = 7,
-                  weight_decay: float = 1e-5):
+                  weight_decay: float = 1e-5,
+                  augment: bool = True):
     """
     Build pipeline-adapter callables that match the expected chaining behavior.
     """
@@ -81,10 +82,8 @@ def make_adapters(data_root: str,
         """
         Ingest step: no input. Returns (train_loader, val_loader, test_loader).
         """
-        # Get augment parameter from outer scope
-        augment_local = augment
         return run_ingest(data_root=data_root, batch_size=batch_size, image_size=image_size,
-                          multi_class=multi_class, num_workers=4, out_dir=out_dir, augment=augment_local)
+                          multi_class=multi_class, num_workers=4, out_dir=out_dir, augment=augment)
 
     def train_step(prev):
         """
@@ -291,6 +290,8 @@ def main():
                    help="Early stopping patience (default: 7)")
     p.add_argument("--weight_decay", type=float, default=1e-5,
                    help="L2 regularization weight decay (default: 1e-5)")
+    p.add_argument("--augment", action="store_true",
+                   help="Enable data augmentation for training (default: False)")
 
     args = p.parse_args()
 
@@ -316,6 +317,7 @@ def main():
         dropout_prob=args.dropout_prob,
         patience=args.patience,
         weight_decay=args.weight_decay,
+        augment=args.augment,
     )
 
     pipeline = train_pipeline(
