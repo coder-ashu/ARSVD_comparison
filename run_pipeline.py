@@ -614,12 +614,14 @@ def main():
     p.add_argument("--loss_type", type=str, default="combined",
                    choices=["bce", "dice", "combined", "dice_focal"],
                    help="Loss function: 'bce', 'dice', 'combined' (recommended), or 'dice_focal' (default: combined)")
-    p.add_argument("--use_tta", action="store_true", default=True,
+    p.add_argument("--use_tta", dest="use_tta", action="store_true", default=True,
                    help="Use Test-Time Augmentation for evaluation (default: True)")
-    p.add_argument("--no_tta", action="store_true",
+    p.add_argument("--no_tta", dest="use_tta", action="store_false",
                    help="Disable Test-Time Augmentation")
-    p.add_argument("--use_cosine_lr", action="store_true", default=True,
+    p.add_argument("--use_cosine_lr", dest="use_cosine_lr", action="store_true", default=True,
                    help="Use Cosine Annealing learning rate schedule (default: True)")
+    p.add_argument("--use_plateau_lr", dest="use_cosine_lr", action="store_false",
+                   help="Use ReduceLROnPlateau instead of Cosine Annealing")
     p.add_argument("--svd_ranks", type=str, default="32",
                    help="Comma-separated ranks to try for SVD compression, e.g. '16,32,64'")
     p.add_argument("--arsvd_taus", type=str, default="0.9",
@@ -636,9 +638,6 @@ def main():
     svd_ranks = _parse_list_of_ints(args.svd_ranks)
     arsvd_taus = _parse_list_of_floats(args.arsvd_taus)
 
-    # Handle TTA flag
-    use_tta = args.use_tta and not args.no_tta
-
     ingest_step, train_step, eval_step = make_adapters(
         data_root=args.data_root,
         batch_size=args.batch_size,
@@ -651,7 +650,7 @@ def main():
         augment_level=args.augment_level,
         base_filters=args.base_filters,
         loss_type=args.loss_type,
-        use_tta=use_tta,
+        use_tta=args.use_tta,
         use_cosine_lr=args.use_cosine_lr,
         svd_ranks=svd_ranks,
         arsvd_taus=arsvd_taus,
