@@ -155,13 +155,16 @@ def create_training_transforms(image_size=(256, 256), augment_level='medium'):
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.Rotate(limit=30, p=0.5, border_mode=0),
-            A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=30, p=0.5, border_mode=0),
-            A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=0.3),  # Simulates tissue deformation
+            # Use Affine instead of deprecated ShiftScaleRotate
+            A.Affine(scale=(0.9, 1.1), translate_percent=(0.0, 0.1), rotate=(0, 30), p=0.5, mode=0),
+            # ElasticTransform: alpha=1, sigma=50 (alpha_affine removed in newer versions)
+            A.ElasticTransform(alpha=1, sigma=50, p=0.3),
             # Intensity transforms (images only)
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-            A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),  # Simulates MRI noise
-            A.GaussianBlur(blur_limit=(3, 7), p=0.3),  # Simulates different resolutions
-            A.CLAHE(clip_limit=2.0, p=0.3),  # Contrast Limited Adaptive Histogram Equalization
+            # GaussNoise: var_limit is deprecated, use variance_limit
+            A.GaussNoise(variance_limit=(10.0, 50.0), p=0.3),
+            A.GaussianBlur(blur_limit=(3, 7), p=0.3),
+            A.CLAHE(clip_limit=2.0, p=0.3),
             A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ToTensorV2(),
         ])
@@ -173,17 +176,17 @@ def create_training_transforms(image_size=(256, 256), augment_level='medium'):
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.Rotate(limit=45, p=0.5, border_mode=0),
-            A.ShiftScaleRotate(shift_limit=0.15, scale_limit=0.2, rotate_limit=45, p=0.5, border_mode=0),
-            A.ElasticTransform(alpha=2, sigma=50, alpha_affine=50, p=0.5),
-            A.GridDistortion(p=0.3),  # Adds local distortions
+            A.Affine(scale=(0.8, 1.2), translate_percent=(0.0, 0.15), rotate=(0, 45), p=0.5, mode=0),
+            A.ElasticTransform(alpha=2, sigma=50, p=0.5),
+            A.GridDistortion(p=0.3),
             A.OpticalDistortion(p=0.3),
             # Intensity transforms
             A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.6),
-            A.GaussNoise(var_limit=(10.0, 80.0), p=0.4),
+            A.GaussNoise(variance_limit=(10.0, 80.0), p=0.4),
             A.GaussianBlur(blur_limit=(3, 9), p=0.4),
             A.CLAHE(clip_limit=3.0, p=0.4),
             A.RandomGamma(gamma_limit=(80, 120), p=0.4),
-            A.CoarseDropout(max_holes=8, max_height=32, max_width=32, p=0.3),  # Cutout regularization
+            A.CoarseDropout(max_holes=8, max_height=32, max_width=32, p=0.3),
             A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ToTensorV2(),
         ])

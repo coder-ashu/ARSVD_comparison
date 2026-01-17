@@ -1,7 +1,7 @@
 # models/evaluation.py
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 import torch
 import torch.nn.functional as F
@@ -68,7 +68,19 @@ class SegmentationEvaluator(Evaluation):
         return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     def calculate_score(self, model: torch.nn.Module, dataloader: torch.utils.data.DataLoader,
-                        device: str = "cpu") -> Dict[str, Any]:
+                        device: str = "cpu", use_tta: bool = False) -> Dict[str, Any]:
+        """
+        Calculate segmentation metrics.
+
+        Args:
+            model: Model to evaluate
+            dataloader: Test data loader
+            device: Device to run on
+            use_tta: Whether to use Test-Time Augmentation
+
+        Returns:
+            Dict with dice, iou, pixel_accuracy
+        """
         model.eval()
         model.to(device)
         dice_total, iou_total, acc_total = 0.0, 0.0, 0.0
@@ -77,13 +89,18 @@ class SegmentationEvaluator(Evaluation):
         with torch.no_grad():
             for images, masks in dataloader:
                 images, masks = images.to(device), masks.to(device)
-                outputs = model(images)
 
-                if outputs.shape[1] > 1:
-                    preds = torch.argmax(F.softmax(outputs, dim=1), dim=1)
-                    masks = masks.squeeze(1)
+                if use_tta:
+                    # Use Test-Time Augmentation
+                    preds = self._predict_with_tta(model, images, device)
                 else:
-                    preds = (torch.sigmoid(outputs) > self.threshold).float()
+                    # Standard prediction
+                    outputs = model(images)
+                    if outputs.shape[1] > 1:
+                        preds = torch.argmax(F.softmax(outputs, dim=1), dim=1)
+                        masks = masks.squeeze(1)
+                    else:
+                        preds = (torch.sigmoid(outputs) > self.threshold).float()
 
                 dice_total += self.dice_score(preds, masks)
                 iou_total += self.iou_score(preds, masks)
@@ -100,8 +117,69 @@ class SegmentationEvaluator(Evaluation):
             "pixel_accuracy": acc_avg,
         }
 
-        logger.info(f"Segmentation Metrics → Dice: {dice_avg:.4f}, IoU: {iou_avg:.4f}, Acc: {acc_avg:.4f}")
+        tta_str = "with TTA" if use_tta else "without TTA"
+        logger.info(f"Segmentation Metrics ({tta_str}) → Dice: {dice_avg:.4f}, IoU: {iou_avg:.4f}, Acc: {acc_avg:.4f}")
         return metrics
+
+    def _predict_with_tta(self, model: torch.nn.Module, images: torch.Tensor,
+                         device: str) -> torch.Tensor:
+        """
+        Test-Time Augmentation: Predict on multiple augmented versions and average.
+
+        Augmentations:
+        1. Original image
+        2. Horizontal flip
+        3. Vertical flip
+        4. Horizontal + Vertical flip
+
+        Args:
+            model: Model to use for prediction
+            images: Input images (N, C, H, W)
+            device: Device to run on
+
+        Returns:
+            Averaged predictions (N, 1, H, W)
+        """
+        model.eval()
+        preds_list = []
+
+        with torch.no_grad():
+            # 1. Original
+            outputs = model(images)
+            if outputs.shape[1] > 1:
+                preds_list.append(torch.argmax(F.softmax(outputs, dim=1), dim=1, keepdim=True))
+            else:
+                preds_list.append((torch.sigmoid(outputs) > self.threshold).float())
+
+            # 2. Horizontal flip
+            outputs_h = model(torch.flip(images, [3]))
+            if outputs_h.shape[1] > 1:
+                pred_h = torch.argmax(F.softmax(outputs_h, dim=1), dim=1, keepdim=True)
+            else:
+                pred_h = (torch.sigmoid(outputs_h) > self.threshold).float()
+            preds_list.append(torch.flip(pred_h, [3]))
+
+            # 3. Vertical flip
+            outputs_v = model(torch.flip(images, [2]))
+            if outputs_v.shape[1] > 1:
+                pred_v = torch.argmax(F.softmax(outputs_v, dim=1), dim=1, keepdim=True)
+            else:
+                pred_v = (torch.sigmoid(outputs_v) > self.threshold).float()
+            preds_list.append(torch.flip(pred_v, [2]))
+
+            # 4. Both flips
+            outputs_hv = model(torch.flip(images, [2, 3]))
+            if outputs_hv.shape[1] > 1:
+                pred_hv = torch.argmax(F.softmax(outputs_hv, dim=1), dim=1, keepdim=True)
+            else:
+                pred_hv = (torch.sigmoid(outputs_hv) > self.threshold).float()
+            preds_list.append(torch.flip(pred_hv, [2, 3]))
+
+        # Average predictions
+        stacked = torch.stack(preds_list, dim=0).float()  # (4, N, 1, H, W)
+        avg_pred = (stacked.mean(dim=0) > 0.5).float()  # (N, 1, H, W)
+
+        return avg_pred
 
 
 def compare_models(original_model: torch.nn.Module,
