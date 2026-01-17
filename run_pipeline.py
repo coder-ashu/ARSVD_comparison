@@ -136,6 +136,7 @@ def make_adapters(data_root: str,
                   lr: float,
                   out_dir: str,
                   multi_class: bool = False,
+                  augment_level: str = 'medium',
                   svd_ranks: List[int] = None,
                   arsvd_taus: List[float] = None,
                   finetune_compressed: bool = False,
@@ -155,7 +156,8 @@ def make_adapters(data_root: str,
         Ingest step: no input. Returns (train_loader, val_loader, test_loader).
         """
         return run_ingest(data_root=data_root, batch_size=batch_size, image_size=image_size,
-                          multi_class=multi_class, num_workers=4, out_dir=out_dir)
+                          multi_class=multi_class, num_workers=4, out_dir=out_dir,
+                          augment_level=augment_level)
 
     def train_step(prev):
         """
@@ -205,7 +207,8 @@ def make_adapters(data_root: str,
                 raise FileNotFoundError("No checkpoint found to evaluate.")
 
         _, _, test_loader = run_ingest(data_root=data_root, batch_size=batch_size, image_size=image_size,
-                                       multi_class=multi_class, num_workers=2, out_dir=out_dir)
+                                       multi_class=multi_class, num_workers=2, out_dir=out_dir,
+                                       augment_level=augment_level)
 
         baseline = UNet(n_channels=3, n_classes=1)
         baseline.load_state_dict(torch.load(ckpt, map_location="cpu"))
@@ -552,6 +555,9 @@ def main():
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--multi_class", action="store_true")
+    p.add_argument("--augment_level", type=str, default="medium",
+                   choices=["light", "medium", "heavy"],
+                   help="Data augmentation intensity: 'light', 'medium', or 'heavy' (default: medium)")
     p.add_argument("--svd_ranks", type=str, default="32",
                    help="Comma-separated ranks to try for SVD compression, e.g. '16,32,64'")
     p.add_argument("--arsvd_taus", type=str, default="0.9",
@@ -577,6 +583,7 @@ def main():
         lr=args.lr,
         out_dir=args.out_dir,
         multi_class=args.multi_class,
+        augment_level=args.augment_level,
         svd_ranks=svd_ranks,
         arsvd_taus=arsvd_taus,
         finetune_compressed=args.finetune_compressed,

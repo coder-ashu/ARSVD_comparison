@@ -13,6 +13,7 @@ opencv-python>=4.8.0
 pycocotools>=2.0.7
 tifffile>=2023.7.10    # if working with medical images (MRI slices)
 imageio>=2.31.0
+albumentations>=1.3.0  # Advanced data augmentation for medical imaging
 
 
 tqdm>=4.66.0
