@@ -156,13 +156,13 @@ def create_training_transforms(image_size=(256, 256), augment_level='medium'):
             A.VerticalFlip(p=0.5),
             A.Rotate(limit=30, p=0.5, border_mode=0),
             # Use Affine instead of deprecated ShiftScaleRotate
-            A.Affine(scale=(0.9, 1.1), translate_percent=(0.0, 0.1), rotate=(0, 30), p=0.5, mode=0),
+            A.Affine(scale=(0.9, 1.1), translate_percent=(0.0, 0.1), rotate=(0, 30), p=0.5),
             # ElasticTransform: alpha=1, sigma=50 (alpha_affine removed in newer versions)
-            A.ElasticTransform(alpha=1, sigma=50, p=0.3),
+            A.ElasticTransform(alpha=1, sigma=50, p=0.3, border_mode=0),
             # Intensity transforms (images only)
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
             # GaussNoise: var_limit is deprecated, use variance_limit
-            A.GaussNoise(variance_limit=(10.0, 50.0), p=0.3),
+            A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),
             A.GaussianBlur(blur_limit=(3, 7), p=0.3),
             A.CLAHE(clip_limit=2.0, p=0.3),
             A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -176,13 +176,13 @@ def create_training_transforms(image_size=(256, 256), augment_level='medium'):
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.Rotate(limit=45, p=0.5, border_mode=0),
-            A.Affine(scale=(0.8, 1.2), translate_percent=(0.0, 0.15), rotate=(0, 45), p=0.5, mode=0),
-            A.ElasticTransform(alpha=2, sigma=50, p=0.5),
+            A.Affine(scale=(0.8, 1.2), translate_percent=(0.0, 0.15), rotate=(0, 45), p=0.5),
+            A.ElasticTransform(alpha=2, sigma=50, p=0.5, border_mode=0),
             A.GridDistortion(p=0.3),
             A.OpticalDistortion(p=0.3),
             # Intensity transforms
             A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.6),
-            A.GaussNoise(variance_limit=(10.0, 80.0), p=0.4),
+            A.GaussNoise(var_limit=(10.0, 80.0), p=0.4),
             A.GaussianBlur(blur_limit=(3, 9), p=0.4),
             A.CLAHE(clip_limit=3.0, p=0.4),
             A.RandomGamma(gamma_limit=(80, 120), p=0.4),

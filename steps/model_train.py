@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
+from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from models.unet import UNet
@@ -117,10 +118,11 @@ def finetune_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
 
 def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, device: str = "cuda",
              epochs: int = 10, lr: float = 1e-4, out_dir: str = "./artifacts",
-             loss_type: str = "combined", base_filters: int = 64,
-             use_cosine_lr: bool = False) -> Dict[str, Any]:
+             loss_type: str = "bce", base_filters: int = 64,
+             use_cosine_lr: bool = False, use_amp: bool = True) -> Dict[str, Any]:
     """
     Training function with support for multiple loss functions and architectures.
+    Optimized for speed with mixed precision training.
 
     Args:
         model: U-Net model to train
@@ -130,15 +132,19 @@ def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
         epochs: Number of training epochs
         lr: Learning rate
         out_dir: Directory to save checkpoints
-        loss_type: Type of loss - 'bce', 'dice', 'combined', 'dice_focal' (default: 'combined')
-        base_filters: Number of base filters in U-Net (64 or 128)
+        loss_type: Type of loss - 'bce', 'dice', 'combined', 'dice_focal' (default: 'bce' for speed)
+        base_filters: Number of base filters in U-Net (default: 64 for speed)
         use_cosine_lr: Use CosineAnnealingLR instead of ReduceLROnPlateau
+        use_amp: Use automatic mixed precision for faster training (default: True)
 
     Returns:
         Dict with checkpoint path and training history
     """
     device = torch.device(device if torch.cuda.is_available() and device.startswith("cuda") else "cpu")
     model.to(device)
+
+    # Mixed precision scaler for faster training
+    scaler = GradScaler() if use_amp and device.type == "cuda" else None
 
     # L2 Regularization
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -152,7 +158,7 @@ def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
     # Select loss function
     if loss_type == "bce":
         criterion = nn.BCEWithLogitsLoss()
-        print(f"Using BCE Loss")
+        print(f"Using BCE Loss (fastest)")
     elif loss_type == "dice":
         criterion = DiceLoss(smooth=1.0)
         print(f"Using Dice Loss")
@@ -177,11 +183,23 @@ def train_fn(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
         for xb, yb in tqdm(train_loader, desc=f"Train epoch {ep+1}/{epochs}"):
             xb, yb = xb.to(device), yb.to(device).float()
             optimizer.zero_grad()
-            out = model(xb)
-            loss = criterion(out, yb)
-            loss.backward()
-            optimizer.step()
-            running_loss += float(loss) * xb.size(0)
+
+            if scaler is not None:
+                # Mixed precision training (faster)
+                with autocast():
+                    out = model(xb)
+                    loss = criterion(out, yb)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                # Standard precision
+                out = model(xb)
+                loss = criterion(out, yb)
+                loss.backward()
+                optimizer.step()
+
+            running_loss += float(loss.detach()) * xb.size(0)
         train_loss = running_loss / len(train_loader.dataset)
         
         # validation

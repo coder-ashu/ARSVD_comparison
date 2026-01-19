@@ -15,6 +15,7 @@ import argparse
 import json
 import logging
 import os
+import gc
 from typing import Tuple, List, Optional, Any, Dict
 
 import torch
@@ -45,6 +46,14 @@ from models.evaluation import SegmentationEvaluator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def cleanup_gpu():
+    """Clear GPU memory to avoid OOM errors."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
 
 
 def _parse_list_of_ints(s: str) -> List[int]:
@@ -137,19 +146,16 @@ def make_adapters(data_root: str,
                   out_dir: str,
                   multi_class: bool = False,
                   augment_level: str = 'medium',
-                  base_filters: int = 128,
-                  loss_type: str = "combined",
+                  base_filters: int = 64,
+                  loss_type: str = "bce",
                   use_tta: bool = True,
                   use_cosine_lr: bool = True,
                   svd_ranks: List[int] = None,
-                  arsvd_taus: List[float] = None,
-                  finetune_compressed: bool = False,
-                  finetune_epochs: int = 3,
-                  finetune_lr: float = 1e-5):
+                  arsvd_taus: List[float] = None):
     """
     Build pipeline-adapter callables that match the expected chaining behavior.
+    Optimized for speed with no fine-tuning.
     """
-
     if svd_ranks is None or len(svd_ranks) == 0:
         svd_ranks = [32]
     if arsvd_taus is None or len(arsvd_taus) == 0:
@@ -184,7 +190,8 @@ def make_adapters(data_root: str,
         model = UNet(n_channels=3, n_classes=1, base_filters=base_filters)
         result = train_fn(model=model, train_loader=train_loader, val_loader=val_loader,
                           device=device, epochs=epochs, lr=lr, out_dir=out_dir,
-                          loss_type=loss_type, base_filters=base_filters, use_cosine_lr=use_cosine_lr)
+                          loss_type=loss_type, base_filters=base_filters, use_cosine_lr=use_cosine_lr,
+                          use_amp=True)  # Enable mixed precision for speed
         # train_fn is expected to return a dict with at least 'ckpt' (path to saved checkpoint).
         return result
 
@@ -269,31 +276,11 @@ def make_adapters(data_root: str,
             svd_fact_model = compress_model_factorized_copy(baseline, rank_map=svd_rank_map, default_rank=rank,
                                                             use_randomized=True, random_state=42,
                                                             n_oversamples=10, n_iter=2)
-
-            # Fine-tune compressed model if requested
-            if finetune_compressed:
-                logger.info(f"Fine-tuning SVD rank={rank} model...")
-                train_loader, val_loader, _ = run_ingest(data_root=data_root, batch_size=batch_size,
-                                                         image_size=image_size, multi_class=multi_class,
-                                                         num_workers=2, out_dir=out_dir, augment_level=augment_level)
-                finetune_result = finetune_fn(
-                    model=svd_fact_model,
-                    train_loader=train_loader,
-                    val_loader=val_loader,
-                    device=device_to_use,
-                    epochs=finetune_epochs,
-                    lr=finetune_lr,
-                    out_dir=out_dir,
-                    model_name=f"svd_rank_{rank}_finetuned"
-                )
-                # Load best checkpoint from fine-tuning
-                svd_fact_model.load_state_dict(torch.load(finetune_result["ckpt"], map_location="cpu"))
-                svd_ckpt = finetune_result["ckpt"]
-            else:
-                svd_ckpt = os.path.join(out_dir, f"svd_factorized_rank_{rank}.pth")
-                torch.save(svd_fact_model.state_dict(), svd_ckpt)
-
             svd_fact_model.eval()
+
+            # Save checkpoint
+            svd_ckpt = os.path.join(out_dir, f"svd_factorized_rank_{rank}.pth")
+            torch.save(svd_fact_model.state_dict(), svd_ckpt)
 
             # evaluate factorized model
             svd_fact_model.to(device_to_use)
@@ -302,13 +289,17 @@ def make_adapters(data_root: str,
 
             svd_fact_model.to("cpu")
 
+            # Clean up GPU memory
+            del svd_fact_model
+            cleanup_gpu()
+            logger.info(f"GPU memory cleared after SVD rank={rank}")
+
             summary["svd_variants"].append({
                 "rank": rank,
                 "ckpt": svd_ckpt,
                 "info": svd_info,
                 "theoretical_factors_MB": round(float(theo_mb), 6),
                 "metrics": svd_metrics,
-                "finetuned": finetune_compressed,
                 "compression_vs_baseline_%": {
                     "params": round(100 * (1 - svd_info["params"] / base_info["params"]), 4),
                     "size_MB": round(100 * (1 - svd_info["size_MB"] / base_info["size_MB"]), 4),
@@ -335,37 +326,23 @@ def make_adapters(data_root: str,
             arsvd_fact_model = compress_model_factorized_copy(baseline, rank_map=arsvd_rank_map,
                                                               use_randomized=True, random_state=42,
                                                               n_oversamples=10, n_iter=2)
-
-            # Fine-tune compressed model if requested
-            if finetune_compressed:
-                logger.info(f"Fine-tuning ARSVD tau={tau} model...")
-                train_loader, val_loader, _ = run_ingest(data_root=data_root, batch_size=batch_size,
-                                                         image_size=image_size, multi_class=multi_class,
-                                                         num_workers=2, out_dir=out_dir, augment_level=augment_level)
-                finetune_result = finetune_fn(
-                    model=arsvd_fact_model,
-                    train_loader=train_loader,
-                    val_loader=val_loader,
-                    device=device_to_use,
-                    epochs=finetune_epochs,
-                    lr=finetune_lr,
-                    out_dir=out_dir,
-                    model_name=f"arsvd_tau_{tau:.3f}_finetuned"
-                )
-                # Load best checkpoint from fine-tuning
-                arsvd_fact_model.load_state_dict(torch.load(finetune_result["ckpt"], map_location="cpu"))
-                arsvd_ckpt = finetune_result["ckpt"]
-            else:
-                arsvd_ckpt = os.path.join(out_dir, f"arsvd_factorized_tau_{tau:.3f}.pth")
-                torch.save(arsvd_fact_model.state_dict(), arsvd_ckpt)
-
             arsvd_fact_model.eval()
 
+            # Save checkpoint
+            arsvd_ckpt = os.path.join(out_dir, f"arsvd_factorized_tau_{tau:.3f}.pth")
+            torch.save(arsvd_fact_model.state_dict(), arsvd_ckpt)
+
+            # Evaluate
             arsvd_fact_model.to(device_to_use)
             arsvd_metrics = evaluator.calculate_score(arsvd_fact_model, test_loader, device=device_to_use, use_tta=use_tta)
             arsvd_info = model_info(arsvd_fact_model)
 
             arsvd_fact_model.to("cpu")
+
+            # Clean up GPU memory
+            del arsvd_fact_model
+            cleanup_gpu()
+            logger.info(f"GPU memory cleared after ARSVD tau={tau}")
 
             summary["arsvd_variants"].append({
                 "tau": tau,
@@ -373,7 +350,6 @@ def make_adapters(data_root: str,
                 "info": arsvd_info,
                 "theoretical_factors_MB": round(float(theo_mb), 6),
                 "metrics": arsvd_metrics,
-                "finetuned": finetune_compressed,
                 "compression_vs_baseline_%": {
                     "params": round(100 * (1 - arsvd_info["params"] / base_info["params"]), 4),
                     "size_MB": round(100 * (1 - arsvd_info["size_MB"] / base_info["size_MB"]), 4),
@@ -606,14 +582,14 @@ def main():
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--multi_class", action="store_true")
-    p.add_argument("--augment_level", type=str, default="heavy",
+    p.add_argument("--augment_level", type=str, default="medium",
                    choices=["light", "medium", "heavy"],
-                   help="Data augmentation intensity: 'light', 'medium', or 'heavy' (default: heavy)")
-    p.add_argument("--base_filters", type=int, default=128,
-                   help="Number of base filters in U-Net: 64 (standard) or 128 (deeper, better accuracy)")
-    p.add_argument("--loss_type", type=str, default="combined",
+                   help="Data augmentation intensity: 'light', 'medium', or 'heavy' (default: medium)")
+    p.add_argument("--base_filters", type=int, default=64,
+                   help="Number of base filters in U-Net: 64 (fast) or 128 (accurate)")
+    p.add_argument("--loss_type", type=str, default="bce",
                    choices=["bce", "dice", "combined", "dice_focal"],
-                   help="Loss function: 'bce', 'dice', 'combined' (recommended), or 'dice_focal' (default: combined)")
+                   help="Loss function: 'bce' (fast), 'dice', 'combined', or 'dice_focal' (default: bce)")
     p.add_argument("--use_tta", dest="use_tta", action="store_true", default=True,
                    help="Use Test-Time Augmentation for evaluation (default: True)")
     p.add_argument("--no_tta", dest="use_tta", action="store_false",
@@ -626,10 +602,6 @@ def main():
                    help="Comma-separated ranks to try for SVD compression, e.g. '16,32,64'")
     p.add_argument("--arsvd_taus", type=str, default="0.9",
                    help="Comma-separated taus to try for ARSVD, e.g. '0.85,0.9,0.95'")
-    p.add_argument("--finetune_compressed", action="store_true",
-                   help="If set, will call train_fn to fine-tune each compressed model (train_fn must accept the same signature).")
-    p.add_argument("--finetune_epochs", type=int, default=3)
-    p.add_argument("--finetune_lr", type=float, default=1e-5)
 
     args = p.parse_args()
 
@@ -654,9 +626,6 @@ def main():
         use_cosine_lr=args.use_cosine_lr,
         svd_ranks=svd_ranks,
         arsvd_taus=arsvd_taus,
-        finetune_compressed=args.finetune_compressed,
-        finetune_epochs=args.finetune_epochs,
-        finetune_lr=args.finetune_lr,
     )
 
     pipeline = train_pipeline(
