@@ -151,10 +151,12 @@ def make_adapters(data_root: str,
                   use_tta: bool = True,
                   use_cosine_lr: bool = True,
                   svd_ranks: List[int] = None,
-                  arsvd_taus: List[float] = None):
+                  arsvd_taus: List[float] = None,
+                  finetune_compressed: bool = False,
+                  finetune_epochs: int = 10):
     """
     Build pipeline-adapter callables that match the expected chaining behavior.
-    Optimized for speed with no fine-tuning.
+    Optimized for speed with optional simple fine-tuning.
     """
     if svd_ranks is None or len(svd_ranks) == 0:
         svd_ranks = [32]
@@ -219,9 +221,12 @@ def make_adapters(data_root: str,
             if not os.path.exists(ckpt):
                 raise FileNotFoundError("No checkpoint found to evaluate.")
 
-        _, _, test_loader = run_ingest(data_root=data_root, batch_size=batch_size, image_size=image_size,
-                                       multi_class=multi_class, num_workers=2, out_dir=out_dir,
-                                       augment_level=augment_level)
+        # Get dataloaders for evaluation and optional fine-tuning
+        train_loader, val_loader, test_loader = run_ingest(
+            data_root=data_root, batch_size=batch_size, image_size=image_size,
+            multi_class=multi_class, num_workers=2, out_dir=out_dir,
+            augment_level=augment_level
+        )
 
         baseline = UNet(n_channels=3, n_classes=1, base_filters=base_filters)
         baseline.load_state_dict(torch.load(ckpt, map_location="cpu"))
@@ -284,6 +289,45 @@ def make_adapters(data_root: str,
 
             # evaluate factorized model
             svd_fact_model.to(device_to_use)
+
+            # Optional fine-tuning with progressive training
+            if finetune_compressed:
+                logger.info(f"Fine-tuning SVD rank={rank} for {finetune_epochs} epochs...")
+                # Phase 1: Train only the decoder (last layers) with higher LR
+                logger.info(f"Phase 1: Training decoder layers...")
+                for name, param in svd_fact_model.named_parameters():
+                    if "up" in name or "outc" in name or "final" in name:
+                        param.requires_grad = True
+                    else:
+                        param.requires_grad = False
+
+                finetune_fn(
+                    model=svd_fact_model,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    device=device_to_use,
+                    epochs=max(2, finetune_epochs // 3),
+                    lr=5e-5,  # Higher LR for decoder
+                    out_dir=out_dir,
+                    model_name=f"svd_rank{rank}_finetuned_decoder"
+                )
+
+                # Phase 2: Train all layers with lower LR
+                logger.info(f"Phase 2: Training all layers...")
+                for param in svd_fact_model.parameters():
+                    param.requires_grad = True
+
+                finetune_fn(
+                    model=svd_fact_model,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    device=device_to_use,
+                    epochs=finetune_epochs,
+                    lr=1e-5,  # Lower LR for full network
+                    out_dir=out_dir,
+                    model_name=f"svd_rank{rank}_finetuned_full"
+                )
+
             svd_metrics = evaluator.calculate_score(svd_fact_model, test_loader, device=device_to_use, use_tta=use_tta)
             svd_info = model_info(svd_fact_model)
 
@@ -334,6 +378,45 @@ def make_adapters(data_root: str,
 
             # Evaluate
             arsvd_fact_model.to(device_to_use)
+
+            # Optional fine-tuning with progressive training
+            if finetune_compressed:
+                logger.info(f"Fine-tuning ARSVD tau={tau:.3f} for {finetune_epochs} epochs...")
+                # Phase 1: Train only the decoder (last layers) with higher LR
+                logger.info(f"Phase 1: Training decoder layers...")
+                for name, param in arsvd_fact_model.named_parameters():
+                    if "up" in name or "outc" in name or "final" in name:
+                        param.requires_grad = True
+                    else:
+                        param.requires_grad = False
+
+                finetune_fn(
+                    model=arsvd_fact_model,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    device=device_to_use,
+                    epochs=max(2, finetune_epochs // 3),
+                    lr=5e-5,  # Higher LR for decoder
+                    out_dir=out_dir,
+                    model_name=f"arsvd_tau{tau:.3f}_finetuned_decoder"
+                )
+
+                # Phase 2: Train all layers with lower LR
+                logger.info(f"Phase 2: Training all layers...")
+                for param in arsvd_fact_model.parameters():
+                    param.requires_grad = True
+
+                finetune_fn(
+                    model=arsvd_fact_model,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    device=device_to_use,
+                    epochs=finetune_epochs,
+                    lr=1e-5,  # Lower LR for full network
+                    out_dir=out_dir,
+                    model_name=f"arsvd_tau{tau:.3f}_finetuned_full"
+                )
+
             arsvd_metrics = evaluator.calculate_score(arsvd_fact_model, test_loader, device=device_to_use, use_tta=use_tta)
             arsvd_info = model_info(arsvd_fact_model)
 
@@ -602,6 +685,10 @@ def main():
                    help="Comma-separated ranks to try for SVD compression, e.g. '16,32,64'")
     p.add_argument("--arsvd_taus", type=str, default="0.9",
                    help="Comma-separated taus to try for ARSVD, e.g. '0.85,0.9,0.95'")
+    p.add_argument("--finetune_compressed", action="store_true", default=False,
+                   help="Fine-tune compressed models after compression (default: False)")
+    p.add_argument("--finetune_epochs", type=int, default=10,
+                   help="Number of fine-tuning epochs for compressed models (default: 10)")
 
     args = p.parse_args()
 
@@ -626,6 +713,8 @@ def main():
         use_cosine_lr=args.use_cosine_lr,
         svd_ranks=svd_ranks,
         arsvd_taus=arsvd_taus,
+        finetune_compressed=args.finetune_compressed,
+        finetune_epochs=args.finetune_epochs,
     )
 
     pipeline = train_pipeline(
